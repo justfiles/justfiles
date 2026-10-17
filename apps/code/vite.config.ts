@@ -16,6 +16,8 @@ export default defineConfig(({ mode }) => ({
 		mode === 'test'
 			? []
 			: [
+					// First, so `dist/devkit` exists before kernelHost's dev server reads `include`.
+					devkitSysroot(),
 					kernelHost({
 						id: 'justfiles.code',
 						name: 'Code',
@@ -26,7 +28,6 @@ export default defineConfig(({ mode }) => ({
 						// Carry the devkit sysroot (`devkit-sysroot.ts` emits dist/devkit/**) into
 						// the seeded bundle so the host can load draft SDK runtime + headers.
 						include: ['devkit/**']
-					}),
-					devkitSysroot()
+					})
 				]
 }))

@@ -1,21 +1,42 @@
-import { resolve } from 'node:path'
+import { cp, mkdtemp, rm, symlink } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { createServer, type ViteDevServer } from 'vite'
-import { afterEach, expect, test } from 'vitest'
+import { afterEach, expect, test, vi } from 'vitest'
 
 let server: ViteDevServer | undefined
+let root: string | undefined
 
 afterEach(async () => {
 	await server?.close()
 	server = undefined
+	if (root) await rm(root, { recursive: true, force: true })
+	root = undefined
 })
+
+// The dev server persists drafts under `<root>/.justfiles/dev`, and `kernelHost` resolves
+// entries from the cwd. A copy in a temp root keeps the run fresh and off a real store.
+async function appCopy(): Promise<string> {
+	const app = resolve(import.meta.dirname, '..')
+	const dir = await mkdtemp(join(tmpdir(), 'app-code-dev-'))
+	for (const file of ['package.json', 'tsconfig.json', 'vite.config.ts', 'devkit-sysroot.ts'])
+		await cp(join(app, file), join(dir, file))
+	for (const folder of ['src', 'public'])
+		await cp(join(app, folder), join(dir, folder), { recursive: true })
+	await symlink(join(app, 'node_modules'), join(dir, 'node_modules'))
+	return dir
+}
 
 test('local development can run, stop, and install a draft', async () => {
 	const template = process.env.DEVKIT_REACT_E2E === '1' ? 'react' : 'plain'
+	root = await appCopy()
+	vi.spyOn(process, 'cwd').mockReturnValue(root)
 	server = await createServer({
-		root: resolve(import.meta.dirname, '..'),
+		root,
 		logLevel: 'silent',
 		server: { host: '127.0.0.1', port: 0, strictPort: true }
 	})
+	vi.restoreAllMocks()
 	await server.listen()
 	const address = server.httpServer?.address()
 	if (!address || typeof address === 'string') throw new Error('Vite did not open a TCP port')

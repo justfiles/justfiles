@@ -1,4 +1,4 @@
-import { join } from 'node:path'
+import { resolve } from 'node:path'
 import { writeSysroot } from '@justfiles/app/devkit-runtime'
 import type { Plugin, ResolvedConfig } from 'vite'
 
@@ -8,7 +8,7 @@ import type { Plugin, ResolvedConfig } from 'vite'
 
 export function devkitSysroot(): Plugin {
 	let config: ResolvedConfig
-	const write = () => writeSysroot(join(config.root, config.build.outDir, 'devkit'))
+	const write = () => writeSysroot(resolve(config.root, config.build.outDir, 'devkit'))
 	return {
 		name: 'app-code:devkit-sysroot',
 		configResolved(resolved) {
