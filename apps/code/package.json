@@ -1,0 +1,51 @@
+{
+	"name": "app-code",
+	"version": "0.4.0",
+	"private": true,
+	"packageManager": "pnpm@11.24.0",
+	"description": "Build and run apps directly in JustFiles.",
+	"type": "module",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/justfiles/app-code.git"
+	},
+	"scripts": {
+		"dev": "vite",
+		"build": "vite build",
+		"preview": "vite preview",
+		"typecheck": "tsc --noEmit",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"format": "biome format --write .",
+		"lint": "biome ci .",
+		"lint:fix": "biome check --write ."
+	},
+	"dependencies": {
+		"@codemirror/lang-javascript": "^6.2.0",
+		"@codemirror/language": "^6.10.0",
+		"@codemirror/lint": "^6.9.7",
+		"@codemirror/view": "^6.30.0",
+		"@justfiles/app": "^0.8.0",
+		"@lezer/highlight": "^1.2.0",
+		"@pierre/trees": "1.0.0-beta.4",
+		"codemirror": "^6.0.0",
+		"valibot": "^1.1.0"
+	},
+	"peerDependencies": {
+		"react": "^19",
+		"react-dom": "^19"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.5.8",
+		"@types/node": "^26.2.0",
+		"@types/react": "^19",
+		"@types/react-dom": "^19",
+		"esbuild": "^0.27.7",
+		"react": "^19",
+		"react-dom": "^19",
+		"typescript": "6.0.3",
+		"vite": "^8.0.16",
+		"vitest": "^4.1.6"
+	}
+}
