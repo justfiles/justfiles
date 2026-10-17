@@ -1,0 +1,41 @@
+name: ci
+
+# Runs the same gates as release.yml, but on pull requests, so `main` is protected
+# by a check that has actually run. release.yml only triggers on push to main, so
+# without this there is nothing for branch protection to require.
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+
+      # corepack ships with Node and reads `packageManager` from package.json, so
+      # pnpm needs no third-party action to install it.
+      - run: corepack enable
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+
+      # Build too: the reducer is compiled by a nested Vite build and its
+      # capabilities are read back by importing it, so a build failure is a class
+      # of bug the other three gates cannot see.
+      - run: pnpm build
