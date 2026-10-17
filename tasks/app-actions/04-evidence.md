@@ -70,8 +70,19 @@ Both responses were:
 }
 ```
 
-## Remaining prerequisite
+## Status as of 2026-10-17
 
-Publish `justfiles.read` into the public JustApps catalog, then create or designate two production
-Clerk test users and boot deployed Just Computer once for each. Repeat every blocked or partial
-manual case before marking T4 done.
+- Read v0.1.0 and v0.1.1 were released on 2026-09-02, and the public catalog now lists
+  `justfiles.read` 0.1.1. The `app_not_installed` blocker above should be gone; no case has been
+  rerun since.
+- Read still resolves a failed save instead of rejecting it, so the extension cannot tell a failed
+  save from a success. [04-read-fix.patch](04-read-fix.patch) fixes this; apply it in
+  `justfiles/app-read` with `git apply`, then release Read.
+- Production Clerk test users have not been checked.
+
+## Remaining work
+
+1. Land and release the Read fix.
+2. Create or designate two production Clerk test users and boot deployed Just Computer once for
+   each.
+3. Repeat every blocked or partial manual case, update the matrix, then mark T4 done.
