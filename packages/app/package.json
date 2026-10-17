@@ -1,5 +1,6 @@
 {
 	"name": "@justfiles/app",
+	"license": "MIT",
 	"version": "0.18.0",
 	"description": "Kernel app SDK for JustFiles apps.",
 	"type": "module",

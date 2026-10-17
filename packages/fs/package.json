@@ -1,5 +1,6 @@
 {
 	"name": "@justfiles/fs",
+	"license": "MIT",
 	"version": "0.8.0",
 	"type": "module",
 	"exports": {
