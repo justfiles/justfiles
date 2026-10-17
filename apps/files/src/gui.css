@@ -1,0 +1,189 @@
+/* The app's own layout, scoped under `.files` and injected on import. Colours come
+   from the platform tokens (`--surface`, `--rule`, `--focus`); the platform sheet
+   (`@justfiles/design/mac`) handles native control defaults, which the rows override. */
+.files {
+	display: flex;
+	height: 100%;
+	width: 100%;
+}
+.files-sidebar {
+	display: flex;
+	flex-direction: column;
+	flex: none;
+	width: 224px;
+	overflow: hidden;
+	background: var(--surface);
+	border-right: 1px solid var(--rule);
+}
+.files-resizer {
+	position: relative;
+	flex: none;
+	width: 6px;
+	margin-left: -3px;
+	z-index: 1;
+	padding: 0;
+	border: 0;
+	appearance: none;
+	background: transparent;
+	cursor: col-resize;
+	touch-action: none;
+}
+.files-resizer::after {
+	content: "";
+	position: absolute;
+	inset: 0 2px;
+	transition: background 0.1s;
+}
+.files-resizer:hover::after,
+.files-resizer.dragging::after {
+	background: var(--focus);
+}
+.files-head {
+	display: flex;
+	flex: none;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 12px;
+}
+.files-main-head {
+	display: flex;
+	flex: none;
+	align-items: baseline;
+	gap: 16px;
+	padding: 6px 12px;
+	border-bottom: 1px solid var(--rule);
+}
+.files-title,
+.files-main-name {
+	font-weight: 500;
+}
+/* The "All files" badge shown while ⌘⇧. has revealed the whole volume. */
+.files-mode {
+	margin-left: auto;
+	padding: 1px 6px;
+	border-radius: 4px;
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	background: var(--trees-bg-muted-override, color-mix(in srgb, var(--text) 10%, transparent));
+	opacity: 0.7;
+}
+/* Right-hand metadata cluster: pushed to the far edge, it owns the leftover
+   width so the long path truncates here instead of crowding the name. The path
+   shrinks; the fixed-width size never does. */
+.files-meta {
+	display: flex;
+	flex: 0 1 auto;
+	min-width: 0;
+	margin-left: auto;
+	align-items: baseline;
+	gap: 8px;
+	font-size: 11px;
+	opacity: 0.5;
+}
+.files-path {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.files-size {
+	flex: none;
+	font-variant-numeric: tabular-nums;
+}
+.files-size::before {
+	content: "·";
+	margin-right: 8px;
+}
+.files-main-name {
+	flex: 0 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.files-error {
+	padding: 0 12px 8px;
+	font-size: 12px;
+	color: var(--danger);
+}
+.files-hint {
+	padding: 4px 12px;
+	font-size: 12px;
+	opacity: 0.6;
+}
+.files-tree-wrap {
+	flex: 1;
+	min-height: 0;
+	min-width: 0;
+	overflow: hidden;
+	/* Containing block for the absolutely-positioned tree below. */
+	position: relative;
+}
+.files-tree {
+	/* Fill the wrap via absolute insets rather than `height: 100%`. A percentage
+	   height on a child of a `flex: 1` parent is not resolved against the
+	   flex-derived height in WebKit/WKWebView (only Chromium does), so the tree
+	   host overflowed its wrap by the header's height in the mac app — its bottom
+	   rows (and scrollbar) spilled below the window with no way to scroll to them
+	   (#203). Absolute `inset: 0` resolves against the wrap's box in every engine. */
+	position: absolute;
+	inset: 0;
+	--trees-bg-override: var(--surface);
+	--trees-fg-override: var(--text);
+	--trees-fg-muted-override: color-mix(in srgb, var(--text) 55%, transparent);
+	--trees-bg-muted-override: color-mix(in srgb, var(--text) 7%, transparent);
+	--trees-border-color-override: var(--rule);
+	--trees-selected-bg-override: var(--focus);
+	--trees-selected-fg-override: var(--on-focus);
+	--trees-focus-ring-color-override: var(--focus);
+	--trees-font-family-override: ui-monospace, Menlo, monospace;
+	--trees-font-size-override: 12px;
+	--trees-padding-inline-override: 6px;
+}
+.files-main {
+	display: flex;
+	flex-direction: column;
+	flex: 1;
+	min-width: 0;
+	background: var(--window-bg);
+	color: var(--text);
+}
+.files-preview {
+	flex: 1;
+	min-height: 0;
+	margin: 0;
+	overflow: auto;
+	padding: 12px;
+	background: transparent;
+	color: inherit;
+	white-space: pre-wrap;
+	word-break: break-word;
+	font-family: ui-monospace, Menlo, monospace;
+	font-size: 12px;
+	line-height: 1.45;
+}
+.files-truncated {
+	display: block;
+	padding-top: 8px;
+	opacity: 0.5;
+}
+.files-image {
+	/* Fit the preview pane without upscaling past the image's own size; the
+	   surrounding <pre> scrolls if the natural size is larger. */
+	display: block;
+	max-width: 100%;
+	height: auto;
+	object-fit: contain;
+}
+.files-muted {
+	opacity: 0.5;
+}
+.files-empty {
+	display: flex;
+	height: 100%;
+	align-items: center;
+	justify-content: center;
+	font-size: 12px;
+	opacity: 0.5;
+}
