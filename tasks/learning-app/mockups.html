@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width,initial-scale=1">
+	<title>Learn — approved app mockups</title>
+	<link rel="stylesheet" href="../../packages/design/mac.css">
+	<style>
+		*{box-sizing:border-box}
+		body{display:flex;flex-direction:column;height:100vh;overflow:hidden}
+		.toolbar{display:flex;flex:none;align-items:center;gap:8px;min-height:40px;padding:6px 8px;background:var(--surface);border-bottom:1px solid var(--rule);overflow:auto}
+		.title{font-size:13px;font-weight:600;white-space:nowrap;margin-right:12px}
+		.spacer{flex:1}
+		a{color:var(--focus);text-underline-offset:3px}
+		.toolbar a{font-size:12px;white-space:nowrap}
+		.screen-choice{position:absolute;width:1px;height:1px;opacity:0}
+		.screen-choice:focus-visible + label{outline:3px solid color-mix(in srgb,var(--focus) 28%,transparent);outline-offset:2px}
+		.screen-choice:checked + label{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
+		.choice-label{cursor:default}
+		main{flex:1;min-height:0;overflow:auto;background:var(--window-bg)}
+		.screen{display:none;height:100%;min-height:0;flex-direction:column}
+		body:has(#select-library:checked) #screen-library,
+		body:has(#select-setup:checked) #screen-setup,
+		body:has(#select-lesson:checked) #screen-lesson,
+		body:has(#select-next:checked) #screen-next{display:flex}
+		.caption{flex:none;display:flex;align-items:center;gap:16px;padding:8px 12px;border-bottom:1px solid var(--rule);font-size:12px}
+		.caption p{margin:0;flex:1}
+		.caption a{white-space:nowrap}
+		.image-area{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;padding:12px;overflow:auto;background:var(--surface)}
+		.image-area img{display:block;max-width:100%;max-height:100%;object-fit:contain;border:1px solid var(--rule);border-radius:6px}
+		footer{flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;min-height:28px;padding:4px 10px;background:var(--surface);border-top:1px solid var(--rule);font-size:11px}
+		.muted{opacity:.65}
+		@media(max-width:760px){.toolbar{flex-wrap:wrap}.title{width:100%}.caption{align-items:flex-start}.image-area{padding:4px}.image-area img{max-height:none;height:auto}.caption a{font-size:11px}}
+	</style>
+</head>
+<body>
+	<div class="toolbar" aria-label="Mockup screens">
+		<span class="title">Learn · App mockups</span>
+		<input class="screen-choice" type="radio" name="screen" id="select-library" ><label class="ds-button choice-label" data-size="sm" for="select-library">Library</label>
+		<input class="screen-choice" type="radio" name="screen" id="select-setup" ><label class="ds-button choice-label" data-size="sm" for="select-setup">New topic</label>
+		<input class="screen-choice" type="radio" name="screen" id="select-lesson" checked><label class="ds-button choice-label" data-size="sm" for="select-lesson">Learning</label>
+		<input class="screen-choice" type="radio" name="screen" id="select-next" ><label class="ds-button choice-label" data-size="sm" for="select-next">What next</label>
+		<span class="spacer"></span>
+		<a href="README.md">Design</a>
+		<a href="user-flows.md">User flows</a>
+	</div>
+	<main>
+		<section class="screen" id="screen-library" aria-label="Library">
+			<div class="caption"><p>A compact topic gallery with a selected-topic inspector and a direct resume action.</p><a href="mockups/01-library.png" target="_blank" rel="noopener">Full-size image</a></div>
+			<div class="image-area"><img src="mockups/01-library.png" alt="Library — revised native-style app mockup"></div>
+		</section>
+		<section class="screen" id="screen-setup" aria-label="New topic">
+			<div class="caption"><p>Agree on a goal, starting point and first lesson. Later lessons adapt to practice and questions.</p><a href="mockups/02-setup.png" target="_blank" rel="noopener">Full-size image</a></div>
+			<div class="image-area"><img src="mockups/02-setup.png" alt="New topic — revised native-style app mockup"></div>
+		</section>
+		<section class="screen" id="screen-lesson" aria-label="Learning">
+			<div class="caption"><p>Existing lessons on the left, material and practice in the centre, anchored questions in the margin.</p><a href="mockups/03-learning.png" target="_blank" rel="noopener">Full-size image</a></div>
+			<div class="image-area"><img src="mockups/03-learning.png" alt="Learning — revised native-style app mockup"></div>
+		</section>
+		<section class="screen" id="screen-next" aria-label="What next">
+			<div class="caption"><p>A suggested next step follows the latest evidence. The learner can start it, review, or change direction.</p><a href="mockups/04-next-step.png" target="_blank" rel="noopener">Full-size image</a></div>
+			<div class="image-area"><img src="mockups/04-next-step.png" alt="What next — revised native-style app mockup"></div>
+		</section>
+	</main>
+	<footer>
+		<span>Adaptive lessons · Tutor in the margin</span>
+		<span class="muted">Approved visual direction; pictured controls are illustrative. Written design governs behavior.</span>
+		<span class="spacer"></span>
+		<a href="data-model.md">Data model</a>
+		<a href="execution-plan.md">Execution plan</a><span class="muted">Design only · No app implementation</span>
+	</footer>
+</body>
+</html>
