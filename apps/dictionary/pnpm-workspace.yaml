@@ -1,0 +1,4 @@
+# TEMPORARY. Delete these entries when the JustFiles packages are more than 24 hours old.
+minimumReleaseAgeExclude:
+  - '@justfiles/app@0.7.0'
+  - '@justfiles/fs@0.7.0'
