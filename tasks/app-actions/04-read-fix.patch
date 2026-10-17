@@ -1,8 +1,8 @@
 diff --git a/src/app.test.ts b/src/app.test.ts
-index 73de5bdd..97f921fe 100644
+index 67acbb2..3e1d0ed 100644
 --- a/src/app.test.ts
 +++ b/src/app.test.ts
-@@ -158,10 +158,12 @@ test('saves URLs without remote images and records failures without files', asyn
+@@ -159,10 +159,12 @@ test('saves URLs without remote images and records failures without files', asyn
  	expect(reads).toEqual(['https://example.com/article', 'https://example.com/new'])
  	expect(((await instance.state(appId)) as ReadState).items).toHaveLength(1)
  
@@ -20,10 +20,10 @@ index 73de5bdd..97f921fe 100644
  	expect(state.failed).toEqual([
  		{ url: 'https://blocked.example/article', error: 'Blocked by the site' }
 diff --git a/src/app.ts b/src/app.ts
-index bb1195ba..ff84c634 100644
+index 8e82c30..4030be6 100644
 --- a/src/app.ts
 +++ b/src/app.ts
-@@ -337,7 +337,8 @@ export const app = defineApp({
+@@ -331,7 +331,8 @@ export const app = defineApp({
  						type: 'saveFailed',
  						params: { url, startedAt, error: errorText(error) }
  					})
@@ -34,10 +34,10 @@ index bb1195ba..ff84c634 100644
  			}
  		}),
 diff --git a/src/gui.tsx b/src/gui.tsx
-index 5833ff0f..3e395d36 100644
+index 76f72ab..463421d 100644
 --- a/src/gui.tsx
 +++ b/src/gui.tsx
-@@ -92,7 +92,10 @@ function Read({ state, client }: GUIProps<typeof app>) {
+@@ -97,7 +97,10 @@ function Read({ state, client }: GUIProps<typeof app>) {
  			if (!isUrl(text) && text.length < PASTE_TEXT_MIN) return
  			event.preventDefault()
  			setSaving(true)
@@ -49,7 +49,7 @@ index 5833ff0f..3e395d36 100644
  		}
  		window.addEventListener('paste', paste)
  		return () => window.removeEventListener('paste', paste)
-@@ -105,6 +108,8 @@ function Read({ state, client }: GUIProps<typeof app>) {
+@@ -110,6 +113,8 @@ function Read({ state, client }: GUIProps<typeof app>) {
  		setInput('')
  		try {
  			await client.save({ input: value })
@@ -58,15 +58,15 @@ index 5833ff0f..3e395d36 100644
  		} finally {
  			setSaving(false)
  		}
-@@ -189,7 +194,10 @@ function Read({ state, client }: GUIProps<typeof app>) {
- 								<strong>{host(entry.url)}</strong>
- 								<p title={entry.error}>{entry.error}</p>
- 								<div className="fail-actions">
--									<button type="button" onClick={() => void client.save({ input: entry.url })}>
-+									<button
-+										type="button"
-+										onClick={() => void client.save({ input: entry.url }).catch(() => {})}
-+									>
- 										Retry
- 									</button>
- 									<button type="button" onClick={pasteInstead}>
+@@ -203,7 +208,10 @@ function Read({ state, client }: GUIProps<typeof app>) {
+ 									<strong>{host(entry.url)}</strong>
+ 									<p title={entry.error}>{entry.error}</p>
+ 									<div className="fail-actions">
+-										<button type="button" onClick={() => void client.save({ input: entry.url })}>
++										<button
++											type="button"
++											onClick={() => void client.save({ input: entry.url }).catch(() => {})}
++										>
+ 											Retry
+ 										</button>
+ 										<button type="button" onClick={pasteInstead}>
