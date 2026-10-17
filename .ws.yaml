@@ -1,0 +1,4 @@
+copy:
+  - platform/frieren/.env
+  - platform/frieren/.dev.vars
+setup: pnpm install
