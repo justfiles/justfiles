@@ -4,11 +4,9 @@
 		"includes": [
 			"platform/**",
 			"apps/crossword/**",
-			"apps/doom/**",
 			"apps/pixel/**",
 			"packages/**",
 			"!**/worker-configuration.d.ts",
-			"!apps/doom/public/doom-runtime.js",
 			"!packages/app/dev-server.html"
 		]
 	},
