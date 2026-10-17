@@ -1,5 +1,6 @@
 {
 	"name": "@justfiles/ui",
+	"license": "MIT",
 	"private": true,
 	"type": "module",
 	"exports": {

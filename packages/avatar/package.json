@@ -1,5 +1,6 @@
 {
 	"name": "@justfiles/avatar",
+	"license": "MIT",
 	"version": "0.1.0",
 	"description": "Mount and render avatars for JustFiles.",
 	"type": "module",

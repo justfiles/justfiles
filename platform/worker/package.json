@@ -1,5 +1,6 @@
 {
 	"name": "@justfiles/worker",
+	"license": "MIT",
 	"private": true,
 	"cloudflare": {
 		"label": "Vite React Template",

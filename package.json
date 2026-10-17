@@ -14,9 +14,9 @@
 		"build": "PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false turbo run build",
 		"dev": "PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false node platform/frieren/scripts/dev.ts",
 		"dev:avatar": "pnpm --filter frieren run dev:avatar",
-		"format": "biome format --write platform apps/crossword apps/doom apps/pixel packages",
-		"lint": "biome ci platform apps/crossword apps/doom apps/pixel packages",
-		"lint:fix": "biome check --write platform apps/crossword apps/doom apps/pixel packages",
+		"format": "biome format --write platform apps/crossword apps/pixel packages",
+		"lint": "biome ci platform apps/crossword apps/pixel packages",
+		"lint:fix": "biome check --write platform apps/crossword apps/pixel packages",
 		"typecheck": "PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false turbo run typecheck",
 		"test": "vitest run",
 		"test:watch": "vitest"

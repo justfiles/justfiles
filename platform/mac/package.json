@@ -1,5 +1,6 @@
 {
 	"name": "@justfiles/frieren-mac",
+	"license": "MIT",
 	"type": "module",
 	"private": true,
 	"scripts": {

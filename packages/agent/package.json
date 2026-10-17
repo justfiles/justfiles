@@ -1,5 +1,6 @@
 {
 	"name": "@justfiles/agent",
+	"license": "MIT",
 	"type": "module",
 	"sideEffects": false,
 	"exports": {

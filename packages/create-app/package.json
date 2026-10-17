@@ -1,5 +1,6 @@
 {
 	"name": "@justfiles/create-app",
+	"license": "MIT",
 	"version": "0.3.3",
 	"description": "Create a JustFiles app from a vanilla or React template.",
 	"type": "module",

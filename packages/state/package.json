@@ -1,5 +1,6 @@
 {
 	"name": "@justfiles/state",
+	"license": "MIT",
 	"private": true,
 	"type": "module",
 	"sideEffects": false,
