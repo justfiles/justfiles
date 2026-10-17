@@ -22,7 +22,7 @@
 		"@codemirror/language": "^6.10.0",
 		"@codemirror/lint": "^6.9.7",
 		"@codemirror/view": "^6.30.0",
-		"@justfiles/app": "^0.8.0",
+		"@justfiles/app": "workspace:*",
 		"@lezer/highlight": "^1.2.0",
 		"@pierre/trees": "1.0.0-beta.4",
 		"codemirror": "^6.0.0",

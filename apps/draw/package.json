@@ -19,7 +19,7 @@
 	},
 	"dependencies": {
 		"@excalidraw/excalidraw": "^0.18.0",
-		"@justfiles/app": "^0.4.2",
+		"@justfiles/app": "workspace:*",
 		"valibot": "^1.1.0"
 	},
 	"peerDependencies": {
