@@ -1,0 +1,5 @@
+# TEMPORARY. Delete this file when these releases are more than 24 hours old.
+# pnpm 11 checks lockfiles against its minimumReleaseAge policy.
+minimumReleaseAgeExclude:
+  - '@justfiles/app@0.4.2'
+  - '@justfiles/design@0.1.0'
