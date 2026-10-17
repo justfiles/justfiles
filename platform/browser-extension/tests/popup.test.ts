@@ -22,7 +22,7 @@ describe('popup errors', () => {
 
 	it('keeps the missing-app remediation actionable', () => {
 		expect(errorMessage('app_not_installed')).toBe(
-			'Open Just Computer once to install Read, then retry.'
+			'Open Just Computer once to finish setting up Read, then retry.'
 		)
 	})
 

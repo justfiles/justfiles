@@ -5,7 +5,7 @@ import type { BackgroundResponse } from '../background.ts'
 export function errorMessage(code: string): string {
 	switch (code) {
 		case 'app_not_installed':
-			return 'Open Just Computer once to install Read, then retry.'
+			return 'Open Just Computer once to finish setting up Read, then retry.'
 		case 'action_not_found':
 			return 'Save to Read is unavailable.'
 		case 'invalid_params':
@@ -53,8 +53,11 @@ async function main(): Promise<void> {
 		return
 	}
 
-	const [tab] = await browser.tabs.query({ active: true, currentWindow: true })
-	const page = activePage(tab ?? {})
+	const currentPage = async () => {
+		const [tab] = await browser.tabs.query({ active: true, currentWindow: true })
+		return activePage(tab ?? {})
+	}
+	const page = await currentPage()
 	if (!page) {
 		status.textContent = 'Only HTTP and HTTPS pages can be saved.'
 		return
@@ -75,7 +78,15 @@ async function main(): Promise<void> {
 		status.textContent = 'Saving to Read...'
 		let response: BackgroundResponse | undefined
 		try {
-			response = (await save(page.url)) as BackgroundResponse | undefined
+			const target = await currentPage()
+			if (!target) {
+				status.textContent = 'Only HTTP and HTTPS pages can be saved.'
+				pageDetails.hidden = true
+				action.hidden = true
+				return
+			}
+			pageDetails.textContent = `${target.title} — ${target.host}`
+			response = (await save(target.url)) as BackgroundResponse | undefined
 		} catch {
 			response = undefined
 		}

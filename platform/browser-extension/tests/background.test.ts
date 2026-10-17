@@ -42,3 +42,25 @@ it('runs actions in the background without returning the token', async () => {
 		})
 	)
 })
+
+it('returns a retryable action error when the app action fails', async () => {
+	vi.mocked(fetch).mockResolvedValueOnce(
+		Response.json({ error: { code: 'action_failed', message: 'action failed' } }, { status: 500 })
+	)
+
+	const [response] = await fakeBrowser.runtime.onMessage.trigger(
+		{
+			type: 'run',
+			appId: 'justfiles.read',
+			action: 'save',
+			params: { input: 'https://blocked.example/article' }
+		},
+		{},
+		vi.fn()
+	)
+
+	expect(response).toEqual({
+		status: 'error',
+		error: { code: 'action_failed', message: 'action failed' }
+	})
+})

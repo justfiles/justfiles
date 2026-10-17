@@ -23,6 +23,12 @@ Do not add a Clerk secret key, session token, API key, or CRX private key to eit
 development CRX private key is kept outside the repository at
 `~/.config/justfiles/browser-extension/development.pem`.
 
+Before an end-to-end check, each Clerk test user must open the deployed Just Computer app and
+complete one successful built-in sync. Confirm that Read appears in the launcher before testing the
+extension. Opening Frieren is not sufficient when the public app catalog has no `justfiles.read`
+release; that is a deployment blocker, and the expected extension response is
+`app_not_installed`.
+
 Build unpacked targets with:
 
 ```sh
@@ -32,6 +38,24 @@ pnpm --filter @justfiles/browser-extension build:firefox
 
 The outputs are `.output/chrome-mv3` and `.output/firefox-mv2`. The Firefox build omits Chrome's
 manifest `key`; Clerk support on Firefox still needs its own compatibility proof.
+
+For a production Chrome check, build with the first command and choose
+`platform/browser-extension/.output/chrome-mv3` in Chrome's **Load unpacked** dialog. The expected
+extension ID is `gkmnaaoiibnpeoillhpcfjdbdgmgfgai`.
+
+The public production values come from the Clerk production instance and the deployed Frieren
+origin:
+
+- `WXT_CLERK_PUBLISHABLE_KEY`: Clerk Dashboard **API keys**.
+- `WXT_CLERK_FRONTEND_API_ORIGIN`: the production Clerk Frontend API domain.
+- `WXT_CLERK_SYNC_HOST`: the same production Frontend API domain.
+- `WXT_FRIEREN_API_ORIGIN`: the deployed Just Computer origin.
+
+In the production Clerk Dashboard, add
+`chrome-extension://gkmnaaoiibnpeoillhpcfjdbdgmgfgai` to the instance's allowed origins without
+removing existing origins. Under **Configure → Developers → Native applications**, enable the
+Native API. Without it Clerk returns `native_api_disabled` and the popup cannot reuse the web
+session.
 
 ## Manual check
 
@@ -49,5 +73,13 @@ manifest `key`; Clerk support on Firefox still needs its own compatibility proof
 10. Sign out through the Just Computer web app, close that tab, then reopen the popup. It should
     return to **Sign in to Just Computer**.
 
-Production Sync Host requires the same extension ID in the production Clerk instance's allowed
-origins before release.
+The generic endpoint can also be checked independently of the extension with a short-lived Clerk
+session token. Do not save or print the token:
+
+```sh
+curl --fail-with-body \
+	-X POST 'https://justcomputer.app/api/v1/apps/justfiles.read/actions/save' \
+	-H "authorization: Bearer $CLERK_SESSION_TOKEN" \
+	-H 'content-type: application/json' \
+	--data '{"input":"https://www.w3.org/Provider/Style/URI"}'
+```
