@@ -1,0 +1,43 @@
+{
+	"name": "app-files",
+	"version": "0.1.2",
+	"private": true,
+	"description": "Browse and preview files in JustFiles.",
+	"type": "module",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/justfiles/app-files.git"
+	},
+	"scripts": {
+		"dev": "vite",
+		"build": "vite build",
+		"preview": "vite preview",
+		"typecheck": "tsc --noEmit",
+		"test": "vitest run",
+		"test:watch": "vitest"
+	},
+	"dependencies": {
+		"@justfiles/app": "workspace:*",
+		"@pierre/trees": "1.0.0-beta.6",
+		"valibot": "^1.4.2"
+	},
+	"peerDependencies": {
+		"react": "^19",
+		"react-dom": "^19"
+	},
+	"devDependencies": {
+		"@justfiles/fs": "workspace:*",
+		"@justfiles/tsconfig": "workspace:*",
+		"@types/node": "^26.3.0",
+		"@types/react": "^19.2.18",
+		"@types/react-dom": "^19.2.5",
+		"@vitejs/plugin-react": "^6.1.0",
+		"esbuild": "^0.27.7",
+		"react": "^19.2.8",
+		"react-dom": "^19.2.8",
+		"typescript": "catalog:",
+		"vite": "^8.2.2",
+		"vitest": "^4.1.11"
+	}
+}

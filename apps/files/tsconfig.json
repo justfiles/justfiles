@@ -1,0 +1,7 @@
+{
+	"extends": "@justfiles/tsconfig/dom.json",
+	"compilerOptions": {
+		"types": ["vite/client", "node"]
+	},
+	"include": ["src"]
+}

@@ -3,8 +3,7 @@
 	"files": {
 		"includes": [
 			"platform/**",
-			"apps/crossword/**",
-			"apps/pixel/**",
+			"apps/**",
 			"packages/**",
 			"!**/worker-configuration.d.ts",
 			"!packages/app/dev-server.html"

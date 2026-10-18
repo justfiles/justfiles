@@ -1,0 +1,41 @@
+{
+	"name": "app-notes",
+	"version": "0.1.1",
+	"private": true,
+	"description": "A freeform knowledge base shared with the agent.",
+	"type": "module",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/justfiles/app-notes.git"
+	},
+	"scripts": {
+		"dev": "vite",
+		"build": "vite build",
+		"preview": "vite preview",
+		"typecheck": "tsc --noEmit",
+		"test": "vitest run",
+		"test:watch": "vitest"
+	},
+	"dependencies": {
+		"@justfiles/app": "workspace:*",
+		"@pierre/trees": "1.0.0-beta.4",
+		"fflate": "^0.8.3",
+		"valibot": "^1.1.0"
+	},
+	"peerDependencies": {
+		"react": "^19",
+		"react-dom": "^19"
+	},
+	"devDependencies": {
+		"@justfiles/tsconfig": "workspace:*",
+		"@types/react": "^19",
+		"@types/react-dom": "^19",
+		"@vitejs/plugin-react": "^5",
+		"react": "^19",
+		"react-dom": "^19",
+		"typescript": "catalog:",
+		"vite": "^8.0.12",
+		"vitest": "^4.1.6"
+	}
+}

@@ -1,0 +1,9 @@
+{
+	"extends": "@justfiles/tsconfig/dom.json",
+	"compilerOptions": {
+		// `node` for `dev-server.test.ts`, which boots a real Vite server over node:path
+		// and `import.meta.dirname`.
+		"types": ["vite/client", "node"]
+	},
+	"include": ["src"]
+}

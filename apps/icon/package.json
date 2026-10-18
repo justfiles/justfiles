@@ -1,0 +1,40 @@
+{
+	"name": "app-icon",
+	"version": "0.1.2",
+	"private": true,
+	"description": "A focused 1024px icon creator backed by Excalidraw.",
+	"type": "module",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/justfiles/app-icon.git"
+	},
+	"scripts": {
+		"dev": "vite",
+		"build": "vite build",
+		"preview": "vite preview",
+		"typecheck": "tsc --noEmit",
+		"test": "vitest run",
+		"test:watch": "vitest"
+	},
+	"dependencies": {
+		"@excalidraw/excalidraw": "^0.18.0",
+		"@justfiles/app": "workspace:*",
+		"valibot": "^1.1.0"
+	},
+	"peerDependencies": {
+		"react": "^19",
+		"react-dom": "^19"
+	},
+	"devDependencies": {
+		"@justfiles/tsconfig": "workspace:*",
+		"@types/react": "^19",
+		"@types/react-dom": "^19",
+		"@vitejs/plugin-react": "^5",
+		"react": "^19",
+		"react-dom": "^19",
+		"typescript": "catalog:",
+		"vite": "^8.0.12",
+		"vitest": "^4.1.6"
+	}
+}

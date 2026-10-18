@@ -1,0 +1,444 @@
+.notes {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	width: 100%;
+	background: var(--window-bg);
+	color: var(--text);
+	outline: 2px solid transparent;
+	outline-offset: -2px;
+}
+/* A dropped file is an import — dashed, because it is a copy, not a move. */
+.notes[data-file-drop] {
+	outline: 2px dashed var(--focus);
+	background: color-mix(in srgb, var(--focus) 6%, var(--window-bg));
+}
+/* The bar: list toggle · search-or-create field. Bare controls — mac.css
+   styles them; only layout lives here. */
+.notes-bar {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 8px;
+	border-bottom: 1px solid var(--rule);
+	background: var(--surface);
+}
+.notes-bar button[aria-pressed="true"] {
+	background: var(--control-bg-active);
+}
+.notes-search {
+	position: relative;
+	flex: 1;
+	min-width: 0;
+}
+.notes-search input {
+	width: 100%;
+	box-sizing: border-box;
+}
+/* The shortcut hint, Spotlight-style: sits in the field, gone once it's used. */
+.notes-kbd {
+	position: absolute;
+	top: 50%;
+	right: 8px;
+	transform: translateY(-50%);
+	font-size: 11px;
+	opacity: 0.45;
+	pointer-events: none;
+}
+.notes-error {
+	flex: none;
+	padding: 4px 12px;
+	font-size: 12px;
+	color: var(--danger);
+}
+/* Import progress + report: a notice, not an error. */
+.notes-status {
+	flex: none;
+	padding: 4px 12px;
+	font-size: 12px;
+	opacity: 0.7;
+}
+/* The conflict prompt sits where the status line does, but reads as a question that
+   is waiting: full opacity, and it stays until one of the two buttons answers it. */
+.notes-conflict {
+	flex: none;
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 6px 12px;
+	padding: 6px 12px;
+	font-size: 12px;
+}
+.notes-conflict button {
+	font-size: 12px;
+}
+.notes-body {
+	position: relative;
+	flex: 1;
+	min-height: 0;
+	display: flex;
+}
+/* The docked pane: the same rows as the dropdown, pinned open. It owns the
+   toggle + search (its header); the editor side stays bare. */
+.notes-side {
+	flex: none;
+	/* width is GUI state (the splitter); min-width keeps a squeezed pane usable */
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	border-right: 1px solid var(--rule);
+	background: var(--surface);
+}
+.notes-side-head {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 8px;
+	border-bottom: 1px solid var(--rule);
+}
+/* Naming a note from the pane: the same row the dropdown appends, pinned under
+   the header (the tree below shows matches, but cannot offer a row of its own). */
+.notes-side-create {
+	flex: none;
+	border-bottom: 1px solid var(--rule);
+}
+/* The scratch, pinned under the header for the same reason: it is a PLACE, not a
+   match, so the tree (and the result list) has no row to offer for it. */
+.notes-side-scratch {
+	flex: none;
+	border-bottom: 1px solid var(--rule);
+}
+/* The splitter: a hairline hit-target that widens its grab area with padding,
+   not with pixels, so the layout doesn't shift. */
+.notes-splitter {
+	flex: none;
+	align-self: stretch;
+	width: 5px;
+	height: auto;
+	border: 0;
+	margin: 0 -2px;
+	cursor: col-resize;
+	background: transparent;
+	outline: none;
+	touch-action: none;
+	z-index: 1;
+}
+.notes-splitter:hover,
+.notes-splitter:focus-visible,
+.notes-body[data-dragging] .notes-splitter {
+	/* a 1px accent line inside the 5px hit-target, not a 5px slab */
+	background: linear-gradient(
+		to right,
+		transparent 2px,
+		var(--focus) 2px,
+		var(--focus) 3px,
+		transparent 3px
+	);
+}
+/* A drag must not select text in the editor it passes over. */
+.notes-body[data-dragging] {
+	user-select: none;
+	cursor: col-resize;
+}
+
+/* The tree plus the blank space under it: that space is the "move to top level"
+   drop zone (see tree.tsx), outlined while a drag hovers it. */
+.notes-tree-wrap {
+	display: flex;
+	flex: 1;
+	min-height: 0;
+	outline: 2px solid transparent;
+	outline-offset: -2px;
+}
+.notes-tree-wrap[data-root-drop] {
+	outline-color: var(--focus);
+	background: color-mix(in srgb, var(--focus) 8%, transparent);
+}
+
+/* The tree renders in a shadow root, so it is themed through its own CSS
+   variables — pointed at the same design tokens as everything else, which is
+   also how it inherits dark mode. */
+.notes-tree {
+	display: block;
+	flex: 1;
+	min-height: 0;
+	width: 100%;
+	--trees-bg-override: var(--surface);
+	--trees-fg-override: var(--text);
+	--trees-border-color-override: var(--rule);
+	--trees-selected-bg-override: color-mix(in srgb, var(--focus) 18%, transparent);
+	--trees-selected-fg-override: var(--text);
+	--trees-focus-ring-color-override: var(--focus);
+	--trees-font-family-override: var(--font-ui);
+	--trees-font-size-override: 12px;
+	--trees-padding-inline-override: 6px;
+}
+/* The row menu is portaled to the body and pinned to the trigger's rect (see
+   tree.tsx): in place it would be clipped by the tree host's `overflow: hidden`
+   and painted under the editor. */
+.notes-menu-layer {
+	position: fixed;
+	z-index: 50;
+}
+.notes-menu {
+	min-width: 180px;
+}
+.notes-menu-note {
+	padding: 6px 10px;
+	font-size: 11px;
+	opacity: 0.6;
+}
+.notes-menu-danger {
+	color: var(--danger);
+}
+.notes-menu-input {
+	margin: 2px 6px 4px;
+	width: calc(100% - 12px);
+	box-sizing: border-box;
+}
+/* The document: the name field over the body. Two fields, one note — the name is
+   the FILENAME, never a line of the file (see gui.tsx). */
+.notes-doc {
+	flex: 1;
+	min-width: 0;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+}
+.notes-title-row {
+	position: relative;
+	flex: none;
+	display: flex;
+	align-items: center;
+	min-width: 0;
+}
+.notes-title {
+	flex: 1;
+	min-width: 0;
+	width: auto;
+	box-sizing: border-box;
+	border: 0;
+	outline: none;
+	box-shadow: none;
+	border-radius: 0;
+	background: transparent;
+	color: inherit;
+	padding: 14px 18px 2px;
+	font-family: var(--font-ui);
+	font-size: 20px;
+	font-weight: 600;
+	line-height: 1.3;
+}
+.notes-move {
+	position: relative;
+	flex: none;
+	margin: 12px 14px 0 0;
+}
+.notes-move-trigger {
+	display: grid;
+	place-items: center;
+	width: 28px;
+	height: 28px;
+	padding: 0;
+	border: 0;
+	border-radius: 6px;
+	background: transparent;
+	color: inherit;
+	opacity: 0.4;
+}
+.notes-move-trigger:hover,
+.notes-move-trigger:focus-visible,
+.notes-move-trigger[aria-expanded="true"] {
+	background: var(--control-bg-hover);
+	opacity: 0.85;
+}
+.notes-move-picker {
+	position: absolute;
+	top: calc(100% + 4px);
+	right: 0;
+	z-index: 20;
+	width: min(360px, calc(100vw - 36px));
+	padding: 10px;
+}
+.notes-move-picker > strong {
+	display: block;
+	padding: 0 2px 8px;
+}
+.notes-move-search {
+	width: 100%;
+	box-sizing: border-box;
+}
+.notes-move-options {
+	max-height: 220px;
+	overflow-y: auto;
+	margin: 8px -4px;
+}
+.notes-move-option {
+	justify-content: space-between;
+	gap: 12px;
+}
+.notes-move-option[data-active="true"],
+.notes-move-option[aria-pressed="true"] {
+	background: var(--control-bg-active);
+}
+.notes-move-option span {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.notes-move-option small {
+	flex: none;
+	opacity: 0.55;
+}
+.notes-move-empty,
+.notes-move-destination {
+	padding: 4px 2px;
+	font-size: 12px;
+	opacity: 0.6;
+}
+.notes-move-destination {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.notes-move-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 6px;
+	padding-top: 8px;
+	border-top: 1px solid var(--rule);
+}
+/* Nothing open: the name field has nothing to name, like the body has nothing to hold. */
+.notes-title:read-only {
+	opacity: 0.4;
+}
+.notes-title[aria-invalid="true"] {
+	color: var(--danger);
+}
+/* A field-level problem, so it sits with the field — the status line is for what
+   already happened elsewhere. */
+.notes-title-error {
+	flex: none;
+	margin: 0;
+	padding: 0 18px 2px;
+	font-size: 12px;
+	color: var(--danger);
+}
+.notes-editor {
+	flex: 1;
+	min-height: 0;
+	width: 100%;
+	box-sizing: border-box;
+	resize: none;
+	border: 0;
+	outline: none;
+	box-shadow: none;
+	background: transparent;
+	color: inherit;
+	padding: 16px 18px;
+	font-family: var(--font-ui);
+	font-size: 14px;
+	line-height: 1.5;
+}
+/* The scratch's own footer: what this text is (nothing, yet) and the two ways to keep it.
+   Swaps to the name prompt in place, so the row does not move when it is asked for. */
+.notes-scratch-foot {
+	flex: none;
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	justify-content: space-between;
+	gap: 8px 12px;
+	padding: 6px 18px 10px;
+	font-size: 12px;
+	opacity: 0.7;
+}
+.notes-scratch-foot button {
+	font-size: 12px;
+}
+.notes-scratch-acts {
+	display: flex;
+	gap: 6px;
+}
+/* The name prompt: the field takes the width, the button stays put. */
+.notes-scratch-name {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex: 1;
+	min-width: 0;
+}
+.notes-scratch-name input {
+	flex: 1;
+	min-width: 0;
+	font-size: 12px;
+}
+/* The refusal belongs under the whole row, not beside the button. */
+.notes-scratch-foot .notes-title-error {
+	flex-basis: 100%;
+	padding: 0;
+}
+/* The dropdown is the ONLY thing that overlays the editor — anchored under the
+   bar (top of the editor body). */
+.notes-results {
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	z-index: 10;
+	max-height: min(60%, 360px);
+	overflow-y: auto;
+	border-radius: 0 0 var(--menu-radius) var(--menu-radius);
+}
+/* An unusable typed name says so where it was offered, instead of being repaired into
+   a note called something else. */
+.notes-create-problem {
+	color: var(--danger);
+	opacity: 1;
+}
+.notes-item {
+	justify-content: space-between;
+	gap: 12px;
+}
+.notes-item-title {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.notes-item[data-open] .notes-item-title {
+	font-weight: 600;
+}
+.notes-item-mtime {
+	font-size: 11px;
+	opacity: 0.5;
+	flex: none;
+}
+.notes-item[data-active="true"] .notes-item-mtime {
+	opacity: 0.8;
+}
+/* The scratch row's own two parts. After `.notes-item-title` on purpose: it is more
+   specific, so it has to come later or the cascade runs backwards. */
+.notes-scratch-row .notes-item-title {
+	display: flex;
+	min-width: 0;
+	align-items: baseline;
+}
+/* What is in the scratch right now, so a note-shaped surface can still show that words
+   are waiting. Takes the slack in the row and ellipsizes first. */
+.notes-scratch-row .notes-scratch-preview {
+	margin-left: 8px;
+	opacity: 0.5;
+	font-style: italic;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.notes-empty {
+	padding: 8px 18px;
+	font-size: 12px;
+	opacity: 0.5;
+}
