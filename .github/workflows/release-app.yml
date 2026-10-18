@@ -1,0 +1,73 @@
+name: release-app
+
+# release-please tags each app release `<app>-v<version>` and creates its GitHub release;
+# this attaches the built app to it. The pattern also matches the package and service
+# tags (`app-v*`, `worker-v*`), which have no `apps/<name>` folder and skip the build.
+# To redo a release's asset, dispatch this workflow on its tag.
+on:
+  push:
+    tags:
+      - '*-v*'
+  workflow_dispatch:
+
+jobs:
+  release:
+    name: Build and attach
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # upload the asset to the release
+      id-token: write # sign the provenance attestation
+      attestations: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve the app
+        run: |
+          NAME="${GITHUB_REF_NAME%-v*}"
+          if [[ "$GITHUB_REF_TYPE" != tag || ! -f "apps/$NAME/package.json" ]]; then
+            echo "$GITHUB_REF_NAME is not an app tag — nothing to do."
+            exit 0
+          fi
+          echo "NAME=$NAME" >> "$GITHUB_ENV"
+          echo "VERSION=${GITHUB_REF_NAME##*-v}" >> "$GITHUB_ENV"
+
+      - uses: pnpm/action-setup@v6
+        if: env.NAME
+
+      - uses: actions/setup-node@v6
+        if: env.NAME
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+        if: env.NAME
+
+      - run: pnpm --filter "./apps/$NAME" run build
+        if: env.NAME
+
+      # Zip the CONTENTS of dist/, so manifest.json sits at the archive root where the
+      # catalog importer looks for it. The importer takes the sole *.zip asset, so the
+      # name only has to say what it is. The build writes package.json#version into the
+      # manifest; a mismatch with the tag would publish a release that lies about itself.
+      - name: Pack
+        if: env.NAME
+        run: |
+          MANIFEST=$(node -p "require('./apps/$NAME/dist/manifest.json').version")
+          if [[ "$MANIFEST" != "$VERSION" ]]; then
+            echo "dist/manifest.json says $MANIFEST, the tag says $VERSION."
+            exit 1
+          fi
+          (cd "apps/$NAME/dist" && zip -qr "$GITHUB_WORKSPACE/$NAME.zip" .)
+
+      - uses: actions/attest@v4
+        if: env.NAME
+        with:
+          subject-path: ${{ env.NAME }}.zip
+
+      - name: Upload to the release
+        if: env.NAME
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" "$NAME.zip" --clobber
