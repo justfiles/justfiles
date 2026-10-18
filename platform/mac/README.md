@@ -2,8 +2,7 @@
 
 The native macOS shell + the daemon (`daemon/`). The AppKit launcher (`native/`) spawns
 the daemon, which serves every app's UI over http and projects each installed app into a
-thin `.app` under `~/Applications/Just Computer Apps/`. Architecture lives in [DESIGN.md](./DESIGN.md);
-the Node→Bun runtime migration in [BUN-MIGRATION-PLAN.md](./BUN-MIGRATION-PLAN.md).
+thin `.app` under `~/Applications/Just Computer Apps/`. Architecture lives in [DESIGN.md](./DESIGN.md).
 
 ## Prerequisites
 
@@ -69,8 +68,7 @@ The thin bundles in `~/Applications/Just Computer Apps/` are also derived data. 
 
 ### What a fresh Volume starts with
 
-The hosted apps `daemon/builtins.ts` names in `SEEDED`: **Files**, **Settings**, **Notes**, and
-**Paint**.
+The hosted apps `daemon/builtins.ts` names in `SEEDED`: **Files**, **Notes**, and **Paint**.
 
 Everything else JustApps publishes, **Code** and **Draw** included, installs from the App Store tile.
 A seeded app is also a trusted one (`reconcile` updates it without asking), so the seed list stays the
@@ -88,7 +86,7 @@ who moves the pointer after the sheet renders — even to a different release un
 reachable from any browser on this Mac. That is not authorization, though: an installed app's
 `gui.js` runs in a daemon-origin document, so any app page is same-origin with the launcher and can
 install (as it can drive every other daemon socket). One gate for the whole surface needs app
-documents off this origin — see `tasks/mac-daemon-loopback-auth.md`. An install fires
+documents off this origin. An install fires
 `app.installed`, which pushes a fresh catalog to every launcher, so the new app appears in the grid
 and its row leaves the list.
 

@@ -1,4 +1,4 @@
-// The message shapes now live in @justfiles/ui (shared with quay's launcher
+// The message shapes now live in @justfiles/ui (shared with the Mac launcher
 // transcript); re-export them so existing imports of '../agent/types' keep
 // working. The session / connection types below stay host-specific.
 import type { Expression } from '@justfiles/agent/expression'

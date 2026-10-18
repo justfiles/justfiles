@@ -25,7 +25,7 @@ export type Route =
 	| { kind: 'app'; id: string } // open a mini-app
 	| { kind: 'settings'; pane?: string } // e.g. accounts → reconnect
 
-// A host channel: it projects a notification onto its platform — quay broadcasts
+// A host channel: it projects a notification onto its platform — the Mac host broadcasts
 // to its launcher sockets (→ UNUserNotificationCenter); frieren pushes to the
 // browser (web push / in-tab toast). Everything portable lives ABOVE it; the
 // channel is the one per-host piece.

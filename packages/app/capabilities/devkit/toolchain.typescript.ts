@@ -1,14 +1,14 @@
-// The Node (quay) toolchain: esbuild for `compile`, the TypeScript compiler API for
-// `typecheck` — the minimal in-process path, no subprocess. Portable JS: it runs
-// in the quay daemon today and, unchanged, in a Worker if ever needed. `ts` is injected
+// The TypeScript toolchain: the TypeScript compiler API for `typecheck`, paired with
+// an injected `compile` — the minimal in-process path, no subprocess. Portable JS: it
+// runs in a browser worker, the Mac daemon's worker, and the dev server. `ts` is injected
 // (`typeof import('typescript')`) so this module keeps only a type-only TS
 // import and never pulls the 8 MB compiler into a host that doesn't want it.
 //
 // typecheck builds a `ts.Program` over an in-memory `CompilerHost` that overlays
 // the draft's `ProjectInput.files` (and any `TypesBundle`) on the real host fs:
-// quay has `node_modules`, so `@justfiles/app` / `valibot` resolve
-// against the same source the runtime is bundled from. The container (Phase 4)
-// passes a baked `TypesBundle` instead; same code, no fs reliance.
+// a host with `node_modules` resolves `@justfiles/app` / `valibot` against the same
+// source the runtime is bundled from. A host without one passes a baked `TypesBundle`
+// instead; same code, no fs reliance.
 
 import type * as TS from 'typescript'
 import { importDiagnostic, type ResolvedImports } from './imports.ts'
@@ -22,7 +22,7 @@ import type {
 	TypesBundle
 } from './toolchain.ts'
 
-// The in-process Node/quay toolchain: an injected `compile` backend (native
+// The in-process toolchain: an injected `compile` backend (native
 // esbuild under node, `Bun.build` under bun — selected by the host) paired with
 // the TypeScript compiler API for `typecheck`. The bundler is no longer named
 // here, so the same toolchain serves both runtimes; only `compile` swaps. Returns
@@ -30,7 +30,7 @@ import type {
 export function typescriptToolchain(opts: {
 	compile: Compile // bundler-agnostic compile backend (runtime closed in)
 	ts: typeof import('typescript') // typecheck
-	types?: TypesBundle // .d.ts stdlib overlay (tsc); quay falls back to node_modules
+	types?: TypesBundle // .d.ts stdlib overlay (tsc); without it, node_modules
 	paths?: TypePaths // tsc import-map for the SDK specifiers (from the sysroot)
 }) {
 	return {

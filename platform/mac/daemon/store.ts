@@ -28,7 +28,7 @@ export interface StoreApp {
 // One cache for the whole daemon, replaced per listing — so a SECOND listing (another launcher,
 // or this one reopened) between a sheet rendering and its confirm can still swap a same-version
 // release under it. Binding each sheet to its own retained offer is the fix, and it needs a
-// handle in the route: tasks/mac-store-consent-binding.md.
+// handle in the route.
 let offered = new Map<string, RunnerCatalogApp>()
 
 // Every app JustApps publishes. Installed-or-not is the launcher's call: it already holds the

@@ -72,8 +72,7 @@ const ROOT_INO = '1'
  * `/private`, the OTHER never-replicated prefix of the old model, is NOT dropped
  * and is NOT the same problem. It holds real user data — credentials, caches —
  * that the old engine kept local by FILTERING the path, and this model has no
- * path filter: [T15](../../tasks/store-model/t15-mounts.md) replaced that with a
- * mount. So a `/private` migrated into a REPLICATED store stops being local, and
+ * path filter: the store model replaced that with a mount. So a `/private` migrated into a REPLICATED store stops being local, and
  * that is what `mounts` is for: a root-level name in it takes its whole subtree
  * into another store, hanging off that store's own root, and the host announces a
  * `mount` row in its place. Both halves belong to the host, because only the host

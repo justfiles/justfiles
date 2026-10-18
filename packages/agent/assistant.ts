@@ -32,7 +32,7 @@ type AssistantProps = {
 	appContext?: () => Promise<string>
 	compaction: CompactionSettings
 	getTimezone?: () => Promise<string> | string
-	// How the host reads a doc body by id (disk on quay, asset fetch on frieren). WHICH docs
+	// How the host reads a doc body by id (disk on Mac, asset fetch on the web). WHICH docs
 	// the agent sees is the shared, hand-maintained catalogue (docs.ts); this only supplies
 	// the bytes. When provided, the docs block goes in the system prompt and a `read_doc` tool
 	// is added. Omit to disable docs. (Skills are independent — see below.)

@@ -1,6 +1,6 @@
 # Frieren shell redesign
 
-> Status: **design — no code yet.** Three related docs that reimagine the desktop
+> Status: **1 shipped, 5 applied, 2–4 design only.** Related docs that reimagine the desktop
 > shell away from its Snow Leopard lineage (menubar + free-floating windows +
 > dock + chat sidebar) toward an **agent-native desktop**: two actors — the human
 > and the agent — sharing one workspace.

@@ -84,9 +84,9 @@ app.post('/fs/reset', clerkMiddleware(), async (c) => {
 	return resetResponse(c, result)
 })
 
-// `/store` is the seam ([T13](../../../tasks/store-model/t13-http-wire.md)), `/fs` is
-// the old wire, and both reach the same owner the same way. Auth is the host's, in
-// front of the mount: `storeApi` decides no policy of its own.
+// `/store` is the store model's wire, `/fs` is the old one, and both reach the same
+// owner the same way. Auth is the host's, in front of the mount: `storeApi` decides no
+// policy of its own.
 app.use('/store/*', clerkMiddleware())
 app.use('/fs/*', clerkMiddleware())
 app.use('/api/*', clerkMiddleware())

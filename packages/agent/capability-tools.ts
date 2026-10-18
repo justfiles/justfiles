@@ -1,4 +1,4 @@
-// The ONE pi ↔ capability seam (interface-refactor plan, Step 3.5): turn a
+// The ONE pi ↔ capability seam: turn a
 // capability's runtime-neutral tool descriptors into pi AgentTools, binding each
 // execute to the AGENT actor over the host's capability invoke. Wire a capability's
 // descriptor set into `createAgentSession` and its tools appear on that host — no

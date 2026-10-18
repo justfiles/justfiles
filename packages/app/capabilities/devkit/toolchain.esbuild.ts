@@ -2,7 +2,7 @@
 // options over the bundler-agnostic vfs rules in `toolchain.vfs.ts`. Browser hosts
 // inject `esbuildCompile` as their `Toolchain.compile` (no `typecheck` — the devkit
 // factory degrades it to CAPABILITY_UNAVAILABLE);
-// `typescriptToolchain` (Node/quay) reuses it too. The browser esbuild-wasm path
+// `typescriptToolchain` reuses it too. The browser esbuild-wasm path
 // injects its own `build`; the Bun sibling lives in `toolchain.bun.ts` behind the
 // same vfs rules.
 

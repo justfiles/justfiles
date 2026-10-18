@@ -1,13 +1,12 @@
 # 4 · The summoning ritual (agent personalization)
 
-> Status: **design.** Replaces the current `PersonalizePanel` views
-> (`src/personalize/`, leftover from the old mandatory-onboarding design) with a
-> themed opt-in flow, and adds a permanent "unpersonalized" signal to the agent
-> surfaces. Builds on what already exists: seeded defaults
-> (`shared/agent-defaults.ts`), the Settings `agent.generateSoul` capability, and
-> the worker re-reading `soul.md` every turn.
-> Interactive mock (this doc's images are captured from it):
-> https://claude.ai/code/artifact/40dc1735-10d1-47e6-8ce0-3f9cfc55912b
+> Status: **design, not built.** A themed opt-in flow for personalizing the agent,
+> plus a permanent "unpersonalized" signal on the agent surfaces. It was written to
+> replace the `PersonalizePanel` views, which have since been removed; today
+> personalization lives in Settings. Builds on what already exists: seeded defaults
+> (`packages/agent/agent-defaults.ts`), the Settings `agent.generateSoul`
+> capability, and the worker re-reading `soul.md` every turn.
+> This doc's images are captured from an interactive mock.
 
 ## The idea
 
@@ -81,7 +80,7 @@ and needs-you states; a nudge there is nagging.
 
 ## Part II — the ritual
 
-A full-screen shell overlay (same mount as today's `PersonalizePanel`), over
+A full-screen shell overlay, over
 the dimmed desktop. **Esc leaves at any moment; nothing is written until the
 final bind.** Not `app-settings` (that's credentials and host wiring), not a
 desktop window (this is a rare ceremonial act, not a tool you tile), not the
@@ -185,7 +184,7 @@ exactly three files:
 No other new state. The whisper needs no dismissal storage because it is not
 dismissible.
 
-## spud-mac
+## Mac
 
 Logically identical, structurally adapted:
 
@@ -206,11 +205,11 @@ Logically identical, structurally adapted:
 2. **The whisper** — `seeded` marker in both seeds, ghost/bound avatar states,
    whisper strip in `MessagesPanel` + omnibar sheet, clickable header. Ships
    the product logic with zero visual-theme risk.
-3. **The ritual restyle** — landing, summoning, binding replacing the
-   `PersonalizePanel` views; generation ceremony; first words.
+3. **The ritual** — landing, summoning, binding; generation ceremony; first
+   words.
 4. **The face** — picker in the binding step, upload + normalize,
    `agents/main/avatar.png` read path in headers.
-5. **spud-mac** — extract shared steps, mount as a page, whisper in the
+5. **Mac** — extract shared steps, mount as a page, whisper in the
    launcher.
 
 ## Open questions

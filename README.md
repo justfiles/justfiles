@@ -1,44 +1,48 @@
 # Justfiles
 
-A focused memory service for humans and AI agents.
-
-The workspace has three top-level groups:
+The monorepo behind **Just Computer**, a desktop where small apps and an AI agent share one
+synced Volume of files. Each app is a state machine with a GUI for people and typed actions
+for the agent, so both work on the same state.
 
 | Directory | Contents |
 | --- | --- |
-| `platform/` | JustFiles hosts, services, CLI, and documentation |
-| `apps/` | Installable apps |
-| `packages/` | Shared libraries and tooling |
+| `platform/` | Hosts and services (below) |
+| `apps/` | First-party apps |
+| `packages/` | The app framework, the agent, the file system, shared UI, tooling |
+| `docs/` | Guides for building apps and working on the platform |
 
-## Creating an app package
+| Platform | What it is |
+| --- | --- |
+| `platform/frieren` | Just Computer on the web ([justcomputer.app](https://justcomputer.app)): a Cloudflare Worker with one Durable Object per user, and the React shell |
+| `platform/mac` | Just Computer for Mac: a native launcher and one `.app` per installed app, over a local Bun daemon |
+| `platform/runner` | JustApps ([justapps.run](https://justapps.run)): the app registry and hosted apps |
+| `platform/worker` | The Just Files volume service ([justfiles.app](https://justfiles.app)) |
+| `platform/cli` | `files`, a CLI for Just Files volumes |
+| `platform/browser-extension` | The Just Computer browser extension |
+| `platform/docs` | The docs site, built from `docs/` |
 
-Use the local create package with Node from the repo root:
+## Building an app
+
+Start with [docs/app.md](docs/app.md). To create one from the template in this tree:
 
 ```sh
 node packages/create-app/index.js apps/my-new-app
 pnpm install
 ```
 
-This uses `packages/create-app` from the working tree, not npm. Avoid `pnpm create @justbuddy/app ...` or `pnpm dlx @justbuddy/create-app ...` when you need the local version.
-
-If the target directory already exists and is non-empty:
-
-```sh
-node packages/create-app/index.js apps/my-new-app --force
-```
-
-Then run it with:
-
-```sh
-cd apps/my-new-app
-pnpm dev
-```
+This uses `packages/create-app` from the working tree. `pnpm create @justfiles/app` and
+`pnpm dlx @justfiles/create-app` fetch the published version instead. Pass `--force` to
+write into a directory that already has files.
 
 ## CLI
 
-The `files` CLI is designed for scripting and AI agent use. It has good help/error message that helps agents discover the usage in a "progressive disclosure" way. (Saves token, only read when needs them)
+`files` reads and writes Just Files volumes, local folders or remote. It is built for
+scripts and agents: every command has focused help, structured exit codes and usage-rich
+errors, so an agent can discover it a step at a time.
 
 ```sh
+npm install -g @justfiles/cli
+
 # Configure once
 cat > ~/.config/files/config.js <<'EOF'
 export default {
@@ -49,14 +53,14 @@ export default {
 }
 EOF
 
-# Commands
-files write --path notes/foo "Hello world"
-files get notes/foo
-files stat notes/foo
+files write --parents notes/foo.md "Hello world"
+files cat notes/foo.md
+files stat notes/foo.md
 files ls notes/
 ```
 
-Global flags: `--config`, `--volume` (or env `FILES_VOLUME`), `--json`, `--quiet`.
+Global flags: `--config`, `--volume` (or env `FILES_VOLUME`), `--json`, `--quiet`. Run
+`files --help` for remote volumes.
 
 ## Development
 
@@ -68,81 +72,64 @@ pnpm dev
 Run pnpm commands from the repository root. The root workspace replaces every
 `@justfiles/app` dependency with the local `packages/app`.
 
-`pnpm dev` builds the apps present under `apps/`, serves their artifacts from one
-local app store, and rebuilds them when their source changes. Frieren seeds its
-built-ins from that store and uses it in place of justapps.run for other apps that
-are already installed. Set `VITE_FRIEREN_DEV_APP_STORE` to keep using an external
-development store instead.
+`pnpm dev` builds the apps under `apps/`, serves their artifacts from one local app store,
+rebuilds them when their source changes, and starts the web client against that store.
+Set `VITE_FRIEREN_DEV_APP_STORE` to use an external development store instead. The Mac
+host has its own dev loop; see [platform/mac/README.md](platform/mac/README.md).
 
-Turbo builds and type-checks every package. Root format, lint, and test commands
-cover `platform/`, `apps/`, and `packages/`.
-
-### Environment and secrets
-
-**Build-time (Vite frontend):**
-
-- `VITE_CLERK_PUBLISHABLE_KEY`: Clerk publishable key — required at build time for the React frontend.
-
-**Worker runtime config:**
-
-- `CLERK_SECRET_KEY`: Clerk secret key — required for JWT session auth and API key verification.
-- `CLERK_PUBLISHABLE_KEY`: Clerk publishable key — required by the Clerk middleware in the worker. This is non-sensitive and should live in `wrangler.jsonc` `vars`, not Cloudflare secrets.
-- `ENCRYPTION_KEY` (frieren): this host's root secret for encryption at rest — the key that never lives in the Volume it protects. Any high-entropy string (`openssl rand -base64 32`). It is never a key directly: each use derives its own subkey (HKDF), so one secret covers every at-rest need; a new one must pick its own derivation label. Today it seals connected-account credentials. Absent locally ⇒ stored in the clear (a startup warning says so); **changing it makes existing accounts unreadable**, so they list as broken and must be re-connected. Use a different value per environment.
-
-#### Local development
-
-Use one of the local flows:
-
-- Frontend-only development (Vite server):
-
-  ```sh
-  # create .env.local with:
-  #   VITE_CLERK_PUBLISHABLE_KEY=pk_live_...
-  # then run:
-  pnpm dev
-  ```
-
-- Worker-backed development with Wrangler:
-
-  ```sh
-  cat > .dev.vars <<'EOF'
-  CLERK_SECRET_KEY=sk_test_...
-  VITE_CLERK_PUBLISHABLE_KEY=pk_test_...
-  EOF
-  CLOUDFLARE_ENV=dev vite
-  ```
-
-`platform/worker/wrangler.jsonc` provides the local Worker runtime `CLERK_PUBLISHABLE_KEY` for the `dev` environment. `platform/worker/.env` provides the frontend build-time `VITE_CLERK_PUBLISHABLE_KEY`. Keep them pointed at the same Clerk project.
-
-The dev server starts a local Cloudflare Worker with a Durable Object backed by a persisted SQLite file at `.wrangler/state/v3/do/`.
-
-### Database (dev)
-
-Migrations run automatically on the **first request** after startup.
-
-The local SQLite state persists across restarts. If you need a clean slate:
+Before a PR, run what CI runs:
 
 ```sh
-rm -rf .wrangler/state
+pnpm typecheck
+pnpm lint
+pnpm test
 ```
+
+### Local configuration
+
+The web client needs two git-ignored files in `platform/frieren`:
+
+- `.env`: `VITE_CLERK_PUBLISHABLE_KEY`, the Clerk publishable key the frontend is built with.
+- `.dev.vars`: the Worker secrets that `wrangler.jsonc` lists under `secrets.required`.
+
+The Worker secrets:
+
+- `CLERK_SECRET_KEY`: verifies Clerk sessions.
+- `OPENROUTER_API_KEY`: the built-in AI.
+- `ENCRYPTION_KEY`: this host's root secret for encryption at rest, the key that never
+  lives in the Volume it protects. Any high-entropy string (`openssl rand -base64 32`).
+  Each use derives its own subkey (HKDF); today it seals connected-account credentials.
+  Without it, credentials are stored in the clear and a startup warning says so.
+  **Changing it makes existing accounts unreadable**, so they must be reconnected. Use a
+  different value per environment.
+- `CODEX_PROXY_KEY`: the shared key for the ChatGPT account proxy (see
+  `platform/frieren/CHATGPT-ACCOUNT-DESIGN.md`).
+
+`CLERK_PUBLISHABLE_KEY` is not secret and lives in `wrangler.jsonc` `vars`.
+
+The local Worker runs a Durable Object backed by a SQLite file under
+`platform/frieren/.wrangler/state/`.
+Migrations run on the first request after startup, and the state persists across
+restarts. Delete that folder for a clean slate.
 
 ### Schema changes
 
 1. Add a new SQL file at `packages/core/src/migrations/NNNN_<name>.sql` with your DDL changes.
-2. Import and register it in `packages/core/src/migrations/index.ts` by appending an entry to the `coreMigrations` array with the next version number.
+2. Register it in `packages/core/src/migrations/index.ts` by appending an entry to the
+   `coreMigrations` array with the next version number.
 3. Commit both files together.
 
-## Production
+## Releases and deploys
 
-```sh
-pnpm run build
-pnpm run deploy
-```
+The web client and the volume service deploy from GitHub Actions only; never run
+`wrangler deploy` for them by hand.
 
-Set runtime secret(s) in Cloudflare before deploying:
+- A merge to `main` runs CI, then deploys the web client and the volume service to staging,
+  each only when it changed.
+- release-please keeps a release PR open for the web client and the npm packages, built
+  from Conventional Commit messages. Merging it tags each release: a `frieren-v*` tag
+  deploys the web client to production, and package releases publish to npm.
+- The volume service deploys to production on a `worker-v*` tag.
 
-```sh
-pnpm dlx wrangler secret put CLERK_SECRET_KEY
-```
-
-Each Durable Object instance has its own embedded SQLite database managed by Cloudflare — no separate provisioning needed. Migrations run automatically on the first request.
+[kb/rebrand-runbook.md](kb/rebrand-runbook.md) has the full deploy model, including why a
+manual `wrangler deploy` lands on production.

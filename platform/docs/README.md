@@ -1,4 +1,4 @@
-# Ghostore Docs Site
+# Docs site
 
 Astro/Starlight shell for the project docs.
 

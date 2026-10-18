@@ -1,5 +1,5 @@
 {
-	"name": "ghostore-monorepo",
+	"name": "justfiles",
 	"packageManager": "pnpm@11.24.0",
 	"private": true,
 	"devDependencies": {

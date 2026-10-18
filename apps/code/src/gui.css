@@ -207,7 +207,7 @@
 	cursor: col-resize;
 }
 
-/* Live preview pane — quay only (`kind: 'url'`): the draft app in a bare iframe
+/* Live preview pane — Mac only (`kind: 'url'`): the draft app in a bare iframe
    beside the editor. Frieren (`kind: 'window'`) renders no pane; its preview is
    a separate OS window. */
 .app-code-preview-pane {

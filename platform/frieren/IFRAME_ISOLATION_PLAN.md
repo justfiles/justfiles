@@ -3,8 +3,8 @@
 > Status: **Steps 1–4 shipped; Step 5 open.** Moved untrusted app code (GUI, then
 > reducer) behind an opaque-origin sandboxed `<iframe>` so a third-party app can no
 > longer reach the host origin, DOM, token, cookies, or synced volume. This is the
-> browser analog of the server's `globalOutbound: null`, and the concrete work behind
-> `LOCAL_FIRST_PLAN.md` **Phase 5** and `APP_STORE_PLAN.md` **Trust**.
+> browser analog of the server's `globalOutbound: null`, and what makes third-party
+> app installs safe.
 >
 > The GUI frame is `FRAME_SRCDOC` in `src/apps/gui-channel.ts`; the reducer frame is
 > `REDUCER_FRAME_SRCDOC` in `src/apps/sandbox.worker.ts`. What remains is Step 5
@@ -466,10 +466,10 @@ exact state.
 
 ## Appendix — URL-served apps, the app origin, and Service Workers
 
-A recurring question: quay/spud-mac serve each app by **URL** (`quayd` HTTP-serves
+A recurring question: the Mac host serves each app by **URL** (its daemon HTTP-serves
 `gui.js`; the WKWebView loads `http://127.0.0.1:PORT/app/<id>`),
 and a URL is a natural fit for an iframe `src`. `DevkitPreview {kind:'url'}` exists
-*because* quay has a server to serve that URL. Could frieren-web do the same, using a
+*because* the Mac host has a server to serve that URL. Could frieren-web do the same, using a
 Service Worker as the "server" (it already ships one via VitePWA, and has all app
 bytes offline in the Volume/IDB)?
 
@@ -524,14 +524,14 @@ it requires is unavoidable for any single-origin isolated approach.
 
 Adopt **URL-served apps from a dedicated app origin, backed by that origin's own
 (backend-free) Service Worker for offline** as the shape of the future cross-origin
-isolation upgrade (decision 2 below / `LOCAL_FIRST_PLAN.md` Phase 5). That is the point
-where a URL model pays for its infra, and where frieren **converges with quay/spud-mac**
+isolation upgrade (decision 2 below). That is the point
+where a URL model pays for its infra, and where frieren **converges with the Mac host**
 (`DevkitPreview {kind:'url'}` would then apply to frieren too). Use a subdomain for
 origin isolation, or a separate registrable domain if process/Spectre isolation is in
 scope.
 
 **Trigger to revisit:** cross-frame memory reads enter the threat model, OR we want to
-unify frieren's app-delivery with quay's URL model. Independent of delivery, a URL never
+unify frieren's app-delivery with the Mac host's URL model. Independent of delivery, a URL never
 carries the live kernel bridge — the capability **port is always handed over
 `postMessage`**, and the devkit preview always needs its scoped-kernel port.
 

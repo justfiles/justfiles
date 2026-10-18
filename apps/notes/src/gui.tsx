@@ -691,7 +691,7 @@ function Notes({ state, actions }: NotesProps) {
 	}, [buffer.path, setDraft])
 
 	// Reflect the open note's filename as the document title — hosts with a native
-	// title bar (e.g. desktop) show it there; in quay the centered header below is
+	// title bar (e.g. desktop) show it there; on Mac the centered header below is
 	// the visible title (the native title is hidden behind a transparent titlebar).
 	useEffect(() => {
 		document.title = openPath ? displayPath(openPath) : 'Notes'

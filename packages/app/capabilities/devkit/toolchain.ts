@@ -6,9 +6,9 @@
 // AROUND this seam, so swapping the toolchain moves only `compile`/`typecheck` and
 // the browser-bound preview stays put.
 //
-// Three impls live behind the seam: a Container running native esbuild + `tsgo`
-// (frieren server), the `typescript` compiler API in-process (quay Node backend),
-// and the browser esbuild-wasm path as a partial impl (no `typecheck`).
+// The impls behind the seam: esbuild (native or wasm) and `Bun.build` for
+// `compile`, the `typescript` compiler API for `typecheck`. Each host picks its pair
+// and usually runs them in a worker (`toolchain.worker.ts`).
 //
 // Pure types only — no impl, no host; and not its own package entry point: hosts
 // reach these through `@justfiles/app/capabilities/devkit/host`. The discipline
@@ -97,7 +97,7 @@ export type Compile = (input: ProjectInput) => Promise<CompileResult>
 // The build/compile seam every host injects — the swappable source→artifact end of
 // the devkit pipeline. `typecheck` is OPTIONAL: a host with no type checker
 // (browser esbuild-wasm) omits it and the devkit factory degrades `typecheck` to
-// CAPABILITY_UNAVAILABLE; a Node host (quay) supplies it. lint/test
+// CAPABILITY_UNAVAILABLE; the web and Mac hosts supply it. lint/test
 // slot in later with no change. This type is not exported from the package as its
 // own entry point — it reaches hosts via `@justfiles/app/capabilities/devkit/host`.
 export interface Toolchain {

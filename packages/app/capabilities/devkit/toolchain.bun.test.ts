@@ -129,7 +129,7 @@ export const gui = defineGUI({
 	expect(js).toContain('injectStyle')
 })
 
-// Real projects (quay's `readProject`) declare entries under `src/` — a directory-
+// Real projects (`readProject`) declare entries under `src/` — a directory-
 // prefixed entrypoint makes Bun derive `src` as the build root and try to open it on
 // the real fs, throwing `failed to open root directory`. Pinning `root` (toolchain.bun.ts)
 // keeps the virtual `src/*` entry buildable.
