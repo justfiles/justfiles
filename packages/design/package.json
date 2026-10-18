@@ -6,7 +6,7 @@
 	"type": "module",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/xiaoxinghu/justfiles.git",
+		"url": "git+https://github.com/justfiles/justfiles.git",
 		"directory": "packages/design"
 	},
 	"exports": {
