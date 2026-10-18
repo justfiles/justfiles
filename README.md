@@ -126,9 +126,12 @@ The web client and the volume service deploy from GitHub Actions only; never run
 
 - A merge to `main` runs CI, then deploys the web client and the volume service to staging,
   each only when it changed.
-- release-please keeps a release PR open for the web client and the npm packages, built
-  from Conventional Commit messages. Merging it tags each release: a `frieren-v*` tag
-  deploys the web client to production, and package releases publish to npm.
+- release-please keeps a release PR open for the web client, the npm packages and the
+  apps, built from Conventional Commit messages. Merging it tags each release: a
+  `frieren-v*` tag deploys the web client to production, package releases publish to npm,
+  and an app release (`draw-v*`) gets the app's built `dist/` attached as its one zip.
+  A new app joins by adding its folder to `release-please-config.json` and
+  `.release-please-manifest.json`.
 - The volume service deploys to production on a `worker-v*` tag.
 
 [kb/rebrand-runbook.md](kb/rebrand-runbook.md) has the full deploy model, including why a

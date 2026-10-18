@@ -4,5 +4,15 @@
 	"packages/design": "0.4.0",
 	"packages/app": "0.18.0",
 	"packages/avatar": "0.1.0",
-	"packages/create-app": "0.3.3"
+	"packages/create-app": "0.3.3",
+	"apps/code": "0.4.0",
+	"apps/crossword": "0.1.0",
+	"apps/dictionary": "0.1.0",
+	"apps/draw": "0.4.4",
+	"apps/files": "0.1.2",
+	"apps/icon": "0.1.2",
+	"apps/notes": "0.1.1",
+	"apps/paint": "0.1.1",
+	"apps/pixel": "0.1.0",
+	"apps/read": "0.1.1"
 }

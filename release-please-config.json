@@ -33,6 +33,56 @@
 			"package-name": "@justfiles/create-app",
 			"component": "create-app",
 			"bump-minor-pre-major": true
+		},
+		"apps/code": {
+			"release-type": "node",
+			"component": "code",
+			"bump-minor-pre-major": true
+		},
+		"apps/crossword": {
+			"release-type": "node",
+			"component": "crossword",
+			"bump-minor-pre-major": true
+		},
+		"apps/dictionary": {
+			"release-type": "node",
+			"component": "dictionary",
+			"bump-minor-pre-major": true
+		},
+		"apps/draw": {
+			"release-type": "node",
+			"component": "draw",
+			"bump-minor-pre-major": true
+		},
+		"apps/files": {
+			"release-type": "node",
+			"component": "files",
+			"bump-minor-pre-major": true
+		},
+		"apps/icon": {
+			"release-type": "node",
+			"component": "icon",
+			"bump-minor-pre-major": true
+		},
+		"apps/notes": {
+			"release-type": "node",
+			"component": "notes",
+			"bump-minor-pre-major": true
+		},
+		"apps/paint": {
+			"release-type": "node",
+			"component": "paint",
+			"bump-minor-pre-major": true
+		},
+		"apps/pixel": {
+			"release-type": "node",
+			"component": "pixel",
+			"bump-minor-pre-major": true
+		},
+		"apps/read": {
+			"release-type": "node",
+			"component": "read",
+			"bump-minor-pre-major": true
 		}
 	},
 	"plugins": ["node-workspace"]
