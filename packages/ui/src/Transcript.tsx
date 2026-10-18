@@ -74,7 +74,7 @@ export interface TranscriptProps {
 
 // Scoped CSS for the bits inline styles can't express: the streaming caret
 // keyframes and the disclosure-row marker reset. Kept local to the component
-// (see NATIVE-LAUNCHER-PLAN §Styling) rather than promoted to the shared sheet.
+// rather than promoted to the shared sheet.
 const css = `
 .js-transcript summary { list-style: none; cursor: pointer; }
 .js-transcript summary::-webkit-details-marker { display: none; }

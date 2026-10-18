@@ -80,7 +80,7 @@ export interface CapabilityBridge {
 	invoke(req: { capability: string; method: string; args: readonly unknown[] }): Promise<unknown>
 }
 
-// ── Capability-provided agent tools (interface-refactor plan, Step 3.5) ─────
+// ── Capability-provided agent tools ─────────────────────────────────────────
 // A capability's AGENT-facing surface, described runtime-neutrally so it lives
 // in this pi-free layer: name/description/JSON-schema parameters plus an
 // `execute` over the capability's own invoke. `@justfiles/agent` holds the one

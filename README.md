@@ -19,7 +19,7 @@ node packages/create-app/index.js apps/my-new-app
 pnpm install
 ```
 
-This uses `packages/create-app` from the working tree, not npm. Avoid `pnpm create @justbuddy/app ...` or `pnpm dlx @justbuddy/create-app ...` when you need the local version.
+This uses `packages/create-app` from the working tree, not npm. Avoid `pnpm create @justfiles/app ...` or `pnpm dlx @justfiles/create-app ...` when you need the local version.
 
 If the target directory already exists and is non-empty:
 

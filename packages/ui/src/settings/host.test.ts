@@ -300,10 +300,10 @@ test('putAvatarFile writes ONE file in ONE avatar, and nowhere else', async () =
 test('agent.readProfile / writeProfile carry only what the user chose to say', async () => {
 	const { caps } = agentHost()
 	expect(await caps.readProfile({})).toMatchObject({ name: '' })
-	await caps.writeProfile({ name: 'Xiaoxing', birthDate: '1985-04-12', gender: 'male' })
+	await caps.writeProfile({ name: 'Ada', birthDate: '1980-01-01', gender: 'male' })
 	expect(await caps.readProfile({})).toEqual({
-		name: 'Xiaoxing',
-		birthDate: '1985-04-12',
+		name: 'Ada',
+		birthDate: '1980-01-01',
 		gender: 'male'
 	})
 })
@@ -316,7 +316,7 @@ test('agent.generateSoul is a preview: it reads the user from the volume and wri
 			return { body: 'A drafted soul.', firstWords: 'I am here.' }
 		}
 	})
-	await caps.writeProfile({ name: 'Xiaoxing', birthDate: '1985-04-12', gender: 'male' })
+	await caps.writeProfile({ name: 'Ada', birthDate: '1980-01-01', gender: 'male' })
 	expect(
 		await caps.generateSoul({ name: 'Fern', gender: 'female', archetype: 'companion' })
 	).toEqual({ body: 'A drafted soul.', firstWords: 'I am here.' })
@@ -365,7 +365,7 @@ test("generation prefers the caller's facts: the generator need not run where th
 		}
 	})
 	// What THIS volume knows is deliberately different from what the caller sends.
-	await caps.writeProfile({ birthDate: '1985-04-12', gender: 'male' })
+	await caps.writeProfile({ birthDate: '1980-01-01', gender: 'male' })
 	await caps.generateSoul({
 		name: 'Fern',
 		gender: 'female',
@@ -380,11 +380,11 @@ test('a profile write is a patch: it never puts back a field it was not given', 
 	// The pane saves per field as you edit, so a whole-profile write let a slower save
 	// restore the value a faster one had just changed.
 	const { caps } = agentHost({})
-	await caps.writeProfile({ name: 'Xiaoxing', birthDate: '1985-04-12', gender: 'male' })
+	await caps.writeProfile({ name: 'Ada', birthDate: '1980-01-01', gender: 'male' })
 	await caps.writeProfile({ gender: 'female' })
 	expect(await caps.readProfile({})).toEqual({
-		name: 'Xiaoxing',
-		birthDate: '1985-04-12',
+		name: 'Ada',
+		birthDate: '1980-01-01',
 		gender: 'female'
 	})
 })

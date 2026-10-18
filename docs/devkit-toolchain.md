@@ -91,8 +91,7 @@ valid **partial impl** behind the seam — online you wire the container-backed 
 offline you fall back to the browser toolchain. The only function genuinely lost offline
 is **`typecheck`** (the one 8 MB dep); it degrades via the existing
 `CAPABILITY_UNAVAILABLE` mechanism (same as volume `system` scope), so the agent skips
-it offline and the GUI grays out the Problems panel — no all-or-nothing cliff. (See
-`platform/frieren/LOCAL_FIRST_PLAN.md`.)
+it offline and the GUI grays out the Problems panel — no all-or-nothing cliff.
 
 **Discipline that keeps the seam clean:** the `Toolchain` interface stays
 implementation-agnostic — pure data in/out, no fs, no subprocess, no slug-reading

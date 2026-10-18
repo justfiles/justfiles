@@ -6,8 +6,7 @@
 > surfaces. Builds on what already exists: seeded defaults
 > (`shared/agent-defaults.ts`), the Settings `agent.generateSoul` capability, and
 > the worker re-reading `soul.md` every turn.
-> Interactive mock (this doc's images are captured from it):
-> https://claude.ai/code/artifact/40dc1735-10d1-47e6-8ce0-3f9cfc55912b
+> This doc's images are captured from an interactive mock.
 
 ## The idea
 

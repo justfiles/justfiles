@@ -1,6 +1,7 @@
 # Fable design: the minimal file-sync model
 
-Response to [research.md](./research.md). Three deliverables: the access
+Response to a brief asking whether `packages/fs` should keep modelling a
+Linux filesystem. Three deliverables: the access
 patterns (#1), the minimal data structures (#2), the minimal implementation
 seam (#3). Then a requirements check, a compression review, prior art, and
 the comparisons with the two sibling designs.
@@ -318,8 +319,7 @@ storage-shaped interface.
   receives one store and nothing else, so no delta, tombstone, or blob
   request can even name local data. This deletes the projection filter, the
   visible↔ignored transition rules, the effective-list hashing, and the
-  reconciliation flow of
-  [sync-node-identity.md](../../tasks/sync-node-identity.md) — the whole
+  reconciliation flow of the earlier sync-node-identity design — the whole
   PR-494 problem class. Creating or removing a mount is one ordinary
   guarded row write that syncs everywhere; who may commit mount rows is
   authority policy.
@@ -391,7 +391,7 @@ There is no capability negotiation: the contract is the contract.
 
 ## Requirements check
 
-[research.md](./research.md) set three requirements. Where each one lands:
+The brief set three requirements. Where each one lands:
 
 1. **"Expose fs APIs; plug into just-bash; implement in any tech; run
    anywhere."** `Volume` keeps its exact POSIX surface (table A), so agents

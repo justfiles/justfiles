@@ -16,8 +16,7 @@ Two distinct kinds of mutable state, in two places:
    overwritten. `seq` is recomputed from zero on boot.
 2. **User data** — arbitrary files in `/data/<id>/`, written via the `volume`
    capability (paint bitmaps, note bodies, code). This lives on a
-   **content-addressed blob layer** (`InodeMeta.contentHash`, lazy hydration; see
-   `LOCAL_FIRST_PLAN.md`).
+   **content-addressed blob layer** (`InodeMeta.contentHash`, lazy hydration).
 
 Two things follow immediately:
 

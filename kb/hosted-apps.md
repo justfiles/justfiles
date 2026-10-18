@@ -47,8 +47,7 @@ token minting, the consent screen, and the first-sync merge — most of the
 remaining work and all of the security-critical work. The pitch survives intact,
 and it is honest: *this app stores data in your browser*.
 
-**No review gate on publishing**, per `APP_STORE_PLAN.md`'s existing posture and
-pi's: apps run with the access they declare, users install at their own risk, we do not
+**No review gate on publishing**, the same posture as pi's: apps run with the access they declare, users install at their own risk, we do not
 review. Publishing still requires authenticated ownership and mechanical bundle
 validation; those are integrity controls, not editorial approval. Keep `abuse@`, a DMCA
 agent, and a kill switch. Drop screening, confusables checks, publish-time detection, and
@@ -353,7 +352,7 @@ escaped character rather than the dot.
 This replaces the first-come-first-served slug registry this document previously
 specified, and deletes a surprising amount with it: no second namespace, no
 allocation chokepoint, no land grab, no separate slug tombstone ledger, and no
-`APP_STORE_PLAN.md`-style first-claim-wins binding to enforce in two directions.
+first-claim-wins binding to enforce in two directions.
 The app id is already globally unique, publisher-scoped and dispute-free, and the
 catalog's filesystem-as-uniqueness-constraint now enforces hostname uniqueness for
 free. Injectivity is what makes that safe: the decoder rejects any label that is
@@ -454,9 +453,7 @@ not speculative platform features:
    name to own. What remains is the publication path: the server — never the submitted
    manifest — must assign `baseUrl`, recompute every digest, validate entry paths and
    capabilities, enforce file/count/size quotas, write immutable R2 objects, and only
-   then atomically flip the app's active-version pointer. Reconcile this with
-   `APP_STORE_PLAN.md`'s npm package ↔ app-id binding so the same id cannot be
-   claimed independently through two publication channels.
+   then atomically flip the app's active-version pointer.
 2. **Enforce the source-metadata trust boundary in code.** The store installer overwrites
    `baseUrl`, `hash`, and `files` today, but the lower-level kernel can still accept those
    fields from another bundle path and can read an unpinned mounted file. A zip or draft

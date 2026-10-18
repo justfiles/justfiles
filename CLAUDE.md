@@ -28,19 +28,13 @@ checks. If blocked, report the specific blocker and what remains unfinished.
 # Worktrees
 
 Before editing repository files, inspect the current branch and existing worktrees.
-Reuse the worktree for the task's branch when available; otherwise create a branch
-and worktree. Never edit directly on `main`.
+Work on a task branch in its own worktree, and reuse it when it exists. Never edit
+directly on `main`.
 
-Seed newly created worktrees with the git-ignored local dev files below; `git worktree`
-only checks out tracked files. Copy them from the main checkout into the same paths,
-copying only files missing from the destination:
-
-- platform/frieren/.env
-- platform/frieren/.dev.vars
-- platform/frieren/.agent
-- platform/worker/.env
-- platform/worker/.dev.vars
-- platform/worker/.agent
+`ws claim <task>` creates the branch and its worktree, then applies `.ws.yaml`: it
+copies the git-ignored local dev files listed under `copy` from the main checkout and
+runs `setup`. When a worktree needs another local file, add it to `.ws.yaml`. Without
+ws, create the worktree with `git worktree add` and do what `.ws.yaml` says by hand.
 
 # Pull requests
 

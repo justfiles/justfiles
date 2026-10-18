@@ -9,10 +9,7 @@ on:
       - main
     paths-ignore:
       - 'docs/**'
-      - 'tasks/**'
       - '*.md'
-      - '*.org'
-      - '*.org_archive'
       - '*.png'
       - 'platform/frieren/*.md'
       - 'packages/*/CHANGELOG.md'

@@ -3,8 +3,8 @@
 > Status: **Steps 1–4 shipped; Step 5 open.** Moved untrusted app code (GUI, then
 > reducer) behind an opaque-origin sandboxed `<iframe>` so a third-party app can no
 > longer reach the host origin, DOM, token, cookies, or synced volume. This is the
-> browser analog of the server's `globalOutbound: null`, and the concrete work behind
-> `LOCAL_FIRST_PLAN.md` **Phase 5** and `APP_STORE_PLAN.md` **Trust**.
+> browser analog of the server's `globalOutbound: null`, and what makes third-party
+> app installs safe.
 >
 > The GUI frame is `FRAME_SRCDOC` in `src/apps/gui-channel.ts`; the reducer frame is
 > `REDUCER_FRAME_SRCDOC` in `src/apps/sandbox.worker.ts`. What remains is Step 5
@@ -524,7 +524,7 @@ it requires is unavoidable for any single-origin isolated approach.
 
 Adopt **URL-served apps from a dedicated app origin, backed by that origin's own
 (backend-free) Service Worker for offline** as the shape of the future cross-origin
-isolation upgrade (decision 2 below / `LOCAL_FIRST_PLAN.md` Phase 5). That is the point
+isolation upgrade (decision 2 below). That is the point
 where a URL model pays for its infra, and where frieren **converges with quay/spud-mac**
 (`DevkitPreview {kind:'url'}` would then apply to frieren too). Use a subdomain for
 origin isolation, or a separate registrable domain if process/Spectre isolation is in
