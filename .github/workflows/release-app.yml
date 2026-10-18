@@ -3,12 +3,17 @@ name: release-app
 # release-please tags each app release `<app>-v<version>` and creates its GitHub release;
 # this attaches the built app to it. The pattern also matches the package and service
 # tags (`app-v*`, `worker-v*`), which have no `apps/<name>` folder and skip the build.
-# To redo a release's asset, dispatch this workflow on its tag.
+# To redo a release's asset, dispatch this workflow on main with its `tag`. Dispatching
+# on the tag itself runs the workflow as of the tagged commit, which may predate this file.
 on:
   push:
     tags:
       - '*-v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build, e.g. draw-v0.4.4. Empty builds the ref dispatched on.
+        required: false
 
 jobs:
   release:
@@ -19,18 +24,23 @@ jobs:
       contents: write # upload the asset to the release
       id-token: write # sign the provenance attestation
       attestations: write
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      IS_TAG: ${{ inputs.tag != '' || github.ref_type == 'tag' }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
 
       - name: Resolve the app
         run: |
-          NAME="${GITHUB_REF_NAME%-v*}"
-          if [[ "$GITHUB_REF_TYPE" != tag || ! -f "apps/$NAME/package.json" ]]; then
-            echo "$GITHUB_REF_NAME is not an app tag — nothing to do."
+          NAME="${TAG%-v*}"
+          if [[ "$IS_TAG" != true || ! -f "apps/$NAME/package.json" ]]; then
+            echo "$TAG is not an app tag — nothing to do."
             exit 0
           fi
           echo "NAME=$NAME" >> "$GITHUB_ENV"
-          echo "VERSION=${GITHUB_REF_NAME##*-v}" >> "$GITHUB_ENV"
+          echo "VERSION=${TAG##*-v}" >> "$GITHUB_ENV"
 
       - uses: pnpm/action-setup@v6
         if: env.NAME
@@ -70,4 +80,4 @@ jobs:
         if: env.NAME
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" "$NAME.zip" --clobber
+        run: gh release upload "$TAG" "$NAME.zip" --clobber
