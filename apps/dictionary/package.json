@@ -7,7 +7,8 @@
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/justfiles/app-dictionary.git"
+		"url": "git+https://github.com/justfiles/justfiles.git",
+		"directory": "apps/dictionary"
 	},
 	"scripts": {
 		"dev": "vite",
