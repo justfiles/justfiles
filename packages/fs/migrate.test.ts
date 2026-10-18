@@ -1,12 +1,10 @@
 /**
  * The migration's namespace half: which store a subtree lands in.
  *
- * [T16](../../tasks/store-model/t16-data-migration.md) wrote the pass and left one
- * thing to this task, in its own words: `/private` was kept off the wire by a path
- * filter, this model has no path filter, so a `/private` migrated into the synced
- * store stops being local. The fix is [T15](../../tasks/store-model/t15-mounts.md)'s
- * — another store, joined at that name — and only the host knows its local store,
- * so the pass takes it as `mounts`.
+ * The old engine kept `/private` off the wire with a path filter. This model has no
+ * path filter, so a `/private` migrated into the synced store would stop being local.
+ * The fix is a mount — another store, joined at that name — and only the host knows
+ * its local store, so the pass takes it as `mounts`.
  *
  * The tree here is a hand-made `LegacyTree`, not a real backend: what is on trial is
  * where a row goes, which is the same question on IndexedDB and on SQLite.

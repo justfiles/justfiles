@@ -11,8 +11,7 @@
  *
  * It writes into whatever `Store` it is handed. In production that is
  * `sqliteStore(db)` over the very database being read — the old tables and the
- * new one live side by side until [T18](../../../tasks/store-model/t18-retire.md)
- * drops the old.
+ * new one live side by side until a later migration drops the old.
  */
 
 import { type Legacy, migrate } from '@justfiles/fs/migrate'

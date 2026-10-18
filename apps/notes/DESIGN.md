@@ -633,7 +633,7 @@ The buffer creates a note in exactly **one** case: the note it was holding was d
 under it, and the words typed since have to land somewhere. That is what the remembered name is for — the
 name the note had — since nothing derives one from a body any more.
 
-**Webview flush gotcha (must design for):** saves are async RPC round-trips to `quayd`. On `Cmd+W`/close
+**Webview flush gotcha (must design for):** saves are async RPC round-trips to the Mac daemon. On `Cmd+W`/close
 the window can tear down *before* the write lands. The close path must **await the final flush**
 (`windowShouldClose` / flush-on-blur), not fire-and-forget — otherwise "save if dirty" isn't true.
 

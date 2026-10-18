@@ -470,10 +470,10 @@ it is a rare, user-triggered event.
 | Source | Idea taken | Idea left |
 | --- | --- | --- |
 | **Kleppmann et al., 2020, "A Highly-Available Move Operation for Replicated Trees"** | The row **is** `(id, parent, name, payload)`. A move is one operation. Cycles are the only invariant a per-node merge can break. | The undo/redo log. An authority check is enough for a client-server topology. |
-| **Dropbox Nucleus** | A server-assigned monotonic revision, and block-level content hashing for large files. | The three-tree planner. `tasks/sync-node-identity.md` already rules it out. |
+| **Dropbox Nucleus** | A server-assigned monotonic revision, and block-level content hashing for large files. | The three-tree planner. The earlier sync-node-identity design already rules it out. |
 | **Google Drive Changes API, Microsoft Graph delta** | One `since(cursor)` call that returns **full item state, not diffs**, including tombstones. This is the strongest confirmation that self-describing rows plus one cursor is the right shape. | Their per-file ACL model. |
 | **Syncthing (BEP)** | Per-device sequence numbers as the cursor. | Path identity. It makes every rename a delete plus a create — the exact cost this work is trying to remove. |
-| **Git** | Content addressing for bytes. | Tree objects as identity. A rename rewrites every ancestor tree, which is the O(depth) write fanout `tasks/sync-node-identity.md` explicitly rejects. |
+| **Git** | Content addressing for bytes. | Tree objects as identity. A rename rewrites every ancestor tree, which is the O(depth) write fanout the earlier sync-node-identity design explicitly rejects. |
 | **Perkeep permanodes** | One stable id per logical object, minted by its creator, never reused, separate from its content. | Claim logs as the storage model. |
 | **Unison** | "What I last agreed with" is a per-node field. That is `base`. | A separate archive tree. Put the field on the row. |
 | **Hypercore / Hyperdrive** | The log is the source of truth and the tree is a view over it. | An unbounded log. One row per node with a `seq` column is the same view with the log pruned. |
@@ -524,7 +524,7 @@ existing `SyncNodeId` backfill needs.
 
 ### 8.5 What this does not solve
 
-- Recursive delete stays O(N). `tasks/sync-node-identity.md` already accepts this.
+- Recursive delete stays O(N). The earlier sync-node-identity design already accepts this.
 - Publishing a subtree across a visibility boundary stays O(N).
 - Two replicas that concurrently move A under B and B under A still need an authority to decide.
   The proposal makes the failure safe, not impossible.

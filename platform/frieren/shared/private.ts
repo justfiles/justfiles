@@ -2,7 +2,7 @@
  * `/private` — the one name this host joins its own store at, on both sides of the wire.
  *
  * The old engine kept this tree off the wire with a path filter; the store model has
- * none, so the name is a MOUNT instead ([T15](../../../tasks/store-model/t15-mounts.md)):
+ * none, so the name is a MOUNT instead:
  * a `mount` row claims it in the synced store on every replica, and what stands behind
  * it is each host's own local store — the DO's credentials on the server, the app cache
  * on the browser. Nothing under it is in the table a client pulls, and `authority.ts`'s

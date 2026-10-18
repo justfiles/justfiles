@@ -1,5 +1,5 @@
-// `bakeTypes` is what lets a no-node_modules host (quay's shipped bun exe, the browser
-// container) still type-check a draft: it collects the SDK `.d.ts` into a
+// `bakeTypes` is what lets a no-node_modules host (the Mac daemon's shipped bun exe, the
+// browser) still type-check a draft: it collects the SDK `.d.ts` into a
 // `TypesBundle` the in-memory checker overlays. These tests lock in that the bundle is
 // COMPLETE enough to type the starter project cleanly — and still catches real errors —
 // so a new SDK type dependency (a missing csstype-style transitive) regresses loudly.

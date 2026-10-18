@@ -149,7 +149,7 @@ only the final model output. See `packages/agent/learning-context.ts` and
 | `packages/app/capabilities/volume/host.test.ts` | A test fixture scopes `/system/profiles`; update or leave (it's an arbitrary scope). |
 | Comments | `packages/agent/index.ts`, `packages/app/capabilities/accounts/store.ts`, `packages/agent/prompts.ts` ("MEMORY.md" wording) mention old paths — sweep while there. |
 
-spud-mac's daemon needs no path change of its own — it consumes
+The Mac daemon needs no path change of its own — it consumes
 `packages/agent`, so it inherits the new tree. It has no identity seeding
 today; that arrives with doc 4's whisper slice.
 

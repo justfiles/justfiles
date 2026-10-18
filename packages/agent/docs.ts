@@ -6,7 +6,7 @@
  * a doc is invisible to the agent until it is listed here. Forgetting to list one fails safe
  * (skipped), never the reverse.
  *
- * The host supplies only a reader for the bytes (disk on quay, asset fetch on frieren); the
+ * The host supplies only a reader for the bytes (disk on Mac, asset fetch on the web); the
  * catalogue and the prompt block are shared across hosts.
  *
  * `id` is the doc path under `docs/` without `.md` (the host reads `docs/<id>.md`). `name` is

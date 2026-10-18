@@ -68,8 +68,7 @@ The thin bundles in `~/Applications/Just Computer Apps/` are also derived data. 
 
 ### What a fresh Volume starts with
 
-The hosted apps `daemon/builtins.ts` names in `SEEDED`: **Files**, **Settings**, **Notes**, and
-**Paint**.
+The hosted apps `daemon/builtins.ts` names in `SEEDED`: **Files**, **Notes**, and **Paint**.
 
 Everything else JustApps publishes, **Code** and **Draw** included, installs from the App Store tile.
 A seeded app is also a trusted one (`reconcile` updates it without asking), so the seed list stays the

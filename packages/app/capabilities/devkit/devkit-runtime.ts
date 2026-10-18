@@ -112,8 +112,8 @@ export async function writeSysroot(root: string, sdk?: SdkBuild): Promise<void> 
 
 // ── Type-checker overlay (the `.d.ts` mirror of `buildRuntime`) ──────────────
 //
-// `typecheck` overlays a draft on an in-memory host. A shipped host (quay's bun exe,
-// the browser container) has no `node_modules`, so `bakeTypes` collects the SDK
+// `typecheck` overlays a draft on an in-memory host. A shipped host (the Mac daemon's
+// bun exe, the browser) has no `node_modules`, so `bakeTypes` collects the SDK
 // `.d.ts` ONCE at build time into a `TypesBundle` plus a `TypePaths` import-map. The
 // files are overlaid beside the draft's `src/`; tsc resolves our SDK specifiers through
 // `paths` (explicit lookup, mirroring the runtime `spec → js` map) and the vendored

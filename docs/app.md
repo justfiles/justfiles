@@ -11,7 +11,7 @@ Frieren and Just Computer for Mac. The best examples are:
 - `packages/create-app/templates` — vanilla and React starter apps
 - `apps/pixel` — rich public action surface
 - `apps/crossword` — AI procedure committing one atomic result
-- [`justfiles/app-files`](https://github.com/justfiles/app-files) — recursive file watching and command coalescing
+- `apps/files` — recursive file watching and command coalescing
 
 This is the app-author API. Do not use kernel, sandbox, transport, app-store, or host internals from an
 app.

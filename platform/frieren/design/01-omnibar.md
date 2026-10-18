@@ -39,9 +39,9 @@ the same list later gains commands, special commands, agent skills, and more (se
 language for those here so v1 doesn't paint us in — but we ship the smallest thing
 a non-technical user can grasp: pick an app, or talk to Frieren.
 
-## Prior art: the spud-mac launcher
+## Prior art: the Mac launcher
 
-The native build already ships this. `platform/spud-mac/ui/launcher/main.tsx` is an
+The native build already ships this. `platform/mac/ui/launcher/main.tsx` is an
 input that fuzzy-filters an app grid and **falls through to the agent when
 nothing matches**:
 
@@ -57,7 +57,7 @@ whole model. We port it, with three changes.
 
 ### Change 1 — launch targets a window, not a URL
 
-spud-mac navigates `location.href = /app/<id>` because each app is a real macOS
+The Mac launcher navigates `location.href = /app/<id>` because each app is a real macOS
 window. In frieren, "launch" is an OS action:
 
 ```ts
@@ -70,7 +70,7 @@ swap.
 
 ### Change 2 — discoverable, not hidden behind a shortcut
 
-For spud-mac, a hidden `⌘K`/hotkey Raycast-style bar is correct: it can't add a
+For the Mac launcher, a hidden `⌘K`/hotkey Raycast-style bar is correct: it can't add a
 permanent element to macOS, so summon-on-shortcut is the only option, and its
 users opted into a power tool.
 
@@ -94,8 +94,8 @@ fast-by-shortcut**, rather than fast-by-shortcut-and-invisible-otherwise.
 ### Change 3 — bottom-anchored, unified with the chat surface
 
 The omnibar is launcher **and** agent, and the agent half dominates the
-interaction — so it obeys chat's learned convention, not Spotlight's. spud-mac
-already does this: a bottom-anchored bar whose surface transitions seamlessly
+interaction — so it obeys chat's learned convention, not Spotlight's. The Mac
+launcher already does this: a bottom-anchored bar whose surface transitions seamlessly
 between the app grid and the transcript because the input never has to move.
 
 One rule makes both modes feel like one thing:
@@ -152,7 +152,7 @@ gets its own permanence budget:
    resident element, sitting where the dock used to sit, roughly dock-sized,
    always on top. Typing anywhere focuses it; `⌘K`/`⌘Space` summon it over a
    full-screen app. This is the discoverability anchor and the lineage anchor
-   with spud-mac (bottom-fixed input, content grows upward).
+   with the Mac launcher (bottom-fixed input, content grows upward).
 2. **Transient (seconds) — the sheet.** Focus (click, summon, or just typing)
    expands the surface — idle grid, search list, or chat — *above* the
    windows. Blur, `Esc`, or launching collapses it back to the pill. While the
@@ -227,7 +227,7 @@ labour: the omnibar is the fastest way to **send**, the window is where you
 **read**.
 
 **Reaching the conversation on demand** *(✅ shipped)*: two paths keep a
-dismissed session from ever being stranded. (1) Following spud-mac, a query
+dismissed session from ever being stranded. (1) Following the Mac launcher, a query
 that matches **no app** is read as intent to talk — the sheet slides straight
 into the transcript (this realises the “only that row remains, sliding
 seamlessly into the transcript” line above), unless the window owns it. (2) A
@@ -317,7 +317,7 @@ Bottom-anchored; content grows **upward**, most-relevant nearest the input:
 
 - **Idle vs. active display.** When engaged with an empty bar (and no
   conversation) the surface
-  is a **grid** of app icons — a friendly, glanceable home screen (like spud-mac /
+  is a **grid** of app icons — a friendly, glanceable home screen (like the Mac launcher /
   Launchpad), orderable by recents/frequency, good for discovery and casual
   users. The first keystroke (or an open conversation) switches it to the
   **vertical list** shown above — ranked app rows growing upward, sharing grammar
@@ -331,7 +331,7 @@ Bottom-anchored; content grows **upward**, most-relevant nearest the input:
   *only* option (sliding into the transcript) when nothing structured matches.
 - **Enter** runs the default; **↑/↓** move; **Esc** dismisses (or clears back to
   launcher mode from a conversation).
-- **The omnibar is the agent surface** — chat happens inline (like spud-mac's
+- **The omnibar is the agent surface** — chat happens inline (like the Mac launcher's
   `ChatSurface`), not in a separate docked panel. A single escape hatch expands a
   long conversation into a full window so the bottom overlay never hosts a
   200-message transcript.
@@ -377,7 +377,7 @@ with the same ranking / pinned-default rules.
 
 ## Phasing
 
-1. **v1 — launch + ask** ✅ **shipped** — a direct port of spud-mac's `Launcher`,
+1. **v1 — launch + ask** ✅ **shipped** — a direct port of the Mac launcher's `Launcher`,
    with the `app.open` swap and the bottom-anchored persistent bar. Two item
    types (apps, ask). Deletes the dock.
 2. **v1.1 — engagement model** ✅ **shipped** — pill at rest, sheet only while

@@ -19,7 +19,7 @@ import {
 export type { TranscriptActivityConfig } from './TranscriptActivity'
 
 // A tool-produced image, referenced by a host-meaningful `src` (a Volume path on
-// frieren, a daemon route on quay) — never inline bytes. The host's `resolveImage`
+// frieren, a daemon route on Mac) — never inline bytes. The host's `resolveImage`
 // turns it into a displayable URL.
 export interface TranscriptImage {
 	src: string

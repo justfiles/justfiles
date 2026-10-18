@@ -227,7 +227,7 @@ export function createEditorView(
 	}
 
 	// Run/Stop. Run launches the live preview (compile + mount: a separate OS
-	// window on frieren, an embedded url pane on quay). Stop tears it down. Stop
+	// window on frieren, an embedded url pane on Mac). Stop tears it down. Stop
 	// waits out any in-flight run so the mount can't re-open behind the teardown.
 	const runPreview = () => {
 		if (launched) return
