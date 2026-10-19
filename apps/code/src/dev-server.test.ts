@@ -27,6 +27,8 @@ async function appCopy(): Promise<string> {
 	return dir
 }
 
+// Starting the server builds the whole devkit sysroot (SDK runtime + rolled-up types), like
+// the other `buildRuntime` tests — so it gets their 60s budget.
 test('local development can run, stop, and install a draft', async () => {
 	const template = process.env.DEVKIT_REACT_E2E === '1' ? 'react' : 'plain'
 	root = await appCopy()
@@ -87,4 +89,4 @@ test('local development can run, stop, and install a draft', async () => {
 	await invoke('stop', {})
 	expect((await fetch(preview)).status).toBe(404)
 	expect(await invoke('install', {})).toEqual({ id: 'local.counter' })
-}, 30_000)
+}, 60_000)
