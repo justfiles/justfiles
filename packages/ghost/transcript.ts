@@ -121,7 +121,7 @@ export function createTranscript(snapshot: SnapshotEvent) {
 }
 
 /** Our record of one pi entry; undefined for bookkeeping the transcript does not show. */
-function toEntry(record: EntryRecord): TranscriptEntry | undefined {
+export function toEntry(record: EntryRecord): TranscriptEntry | undefined {
 	const message = record.model?.[0]
 	const id = record.id
 	switch (record.kind) {

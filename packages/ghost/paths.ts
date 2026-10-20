@@ -15,3 +15,10 @@ export const agentDir = (agentId = 'main') => `/system/agents/${agentId}`
 export const soul = (agentId = 'main') => `${agentDir(agentId)}/soul.md`
 export const transcriptsDir = (agentId = 'main') => `${agentDir(agentId)}/transcripts`
 export const shellsDir = (agentId = 'main') => `${agentDir(agentId)}/shells`
+export const shellTranscripts = (shellId: string, agentId = 'main') =>
+	`${transcriptsDir(agentId)}/${shellId}`
+/** One transcript file per day per shell, mirrored from its conversation. */
+export const transcript = (shellId: string, day: string, agentId = 'main') =>
+	`${shellTranscripts(shellId, agentId)}/${day}.jsonl`
+export const shellFile = (shellId: string, agentId = 'main') =>
+	`${shellsDir(agentId)}/${shellId}.json`

@@ -18,6 +18,7 @@ import {
 	type Tool,
 	type TranscriptEvent
 } from './index.ts'
+import { parseLines } from './mirror.ts'
 import { openNodeSqliteState } from './state/node-sqlite.ts'
 
 let dir: string
@@ -41,13 +42,14 @@ async function openOn(
 	path: string,
 	tools?: Tool[],
 	world: Volume = volume(memStore()),
-	settings: GhostSettings = {}
+	settings: GhostSettings = {},
+	shell = { id: 'test', name: 'Test', kind: 'test' }
 ): Promise<Ghost> {
 	const ghost = await openGhost({
 		volume: world,
 		state: await openNodeSqliteState(path),
 		models,
-		shell: { id: 'test', name: 'Test', kind: 'test' },
+		shell,
 		tools,
 		settings: { model: { provider: 'faux', modelId: 'faux-1' }, ...settings }
 	})
@@ -150,7 +152,7 @@ describe('openGhost', () => {
 			if (event.type !== 'snapshot') throw new Error('bad watcher')
 		})
 		const events = record(ghost)
-		faux.setResponses([fauxAssistantMessage('one'), fauxAssistantMessage('two')])
+		faux.setResponses([fauxAssistantMessage('one'), () => fauxAssistantMessage('two')])
 
 		await ghost.ask('first', { id: '1' })
 		await ghost.ask('second', { id: '2' })
@@ -238,10 +240,10 @@ describe('openGhost', () => {
 		])
 
 		const first = await openOn(path, [hold])
-		const cut = first.ask('go', { id: 'turn' })
+		const cut = expect(first.ask('go', { id: 'turn' })).rejects.toThrow()
 		await running
 		await first.close()
-		await expect(cut).rejects.toThrow()
+		await cut
 
 		const second = await openOn(path, [hold])
 		const settled = await second.ask('go', { id: 'turn' })
@@ -666,12 +668,12 @@ describe('the Volume is the world', () => {
 		])
 
 		const first = await openOn(path, undefined, dying)
-		const cut = first.ask('Write it.', { id: 'turn' })
+		const cut = expect(first.ask('Write it.', { id: 'turn' })).rejects.toThrow()
 		await landed
 		const closing = first.close()
 		release()
 		await closing
-		await expect(cut).rejects.toThrow()
+		await cut
 
 		const second = await openOn(path, undefined, dying)
 		const settled = await second.ask('Write it.', { id: 'turn' })
@@ -680,5 +682,205 @@ describe('the Volume is the world', () => {
 		expect(writes).toBe(1)
 		expect(dec(await world.readFile('/out.txt'))).toBe('once')
 		expect(toolResults(second)).toMatchObject([{ name: 'write', isError: true }])
+	})
+})
+
+describe('transcript mirror, shell record and transcript tool', () => {
+	const NOW = new Date('2026-10-19T12:00:00Z')
+
+	beforeEach(() => {
+		vi.useFakeTimers({ toFake: ['Date'] })
+		vi.setSystemTime(NOW)
+	})
+
+	afterEach(() => {
+		vi.useRealTimers()
+	})
+
+	const long: Tool = {
+		name: 'long',
+		description: 'Say a lot.',
+		parameters: { type: 'object', properties: {} },
+		execute: async () => ({ text: 'x'.repeat(5000) })
+	}
+
+	async function mirrorOf(world: Volume, shell = 'test', day = '2026-10-19') {
+		const text = dec(await world.readFile(`/system/agents/main/transcripts/${shell}/${day}.jsonl`))
+		return text
+			.trimEnd()
+			.split('\n')
+			.map((line) => JSON.parse(line))
+	}
+
+	it('mirrors each entry once, in order, across a reopen', async () => {
+		const path = join(dir, 'state.sqlite')
+		const world = volume(memStore())
+		faux.setResponses([
+			...calls(['long', {}]),
+			fauxAssistantMessage('said'),
+			fauxAssistantMessage('again')
+		])
+
+		const first = await openOn(path, [long], world)
+		await first.ask('Talk.', { id: '1' })
+		await first.close()
+		const second = await openOn(path, [long], world)
+		await second.ask('Once more.', { id: '2' })
+		await second.close()
+
+		const lines = await mirrorOf(world)
+		expect(lines).toMatchObject([
+			{ at: NOW.toISOString(), kind: 'user', text: 'Talk.', askId: '1' },
+			{ kind: 'assistant', toolCalls: [{ name: 'long' }] },
+			{ kind: 'tool', name: 'long', text: `${'x'.repeat(2000)}… [3000 more characters]` },
+			{ kind: 'assistant', text: 'said' },
+			{ kind: 'user', text: 'Once more.' },
+			{ kind: 'assistant', text: 'again' }
+		])
+		const ids = lines.map((line) => line.id)
+		expect(ids).toEqual([...new Set(ids)].sort((a, b) => a - b))
+	})
+
+	it('starts a new line after one a dying process left half written', async () => {
+		const world = volume(memStore())
+		await put(
+			world,
+			'/system/agents/main/transcripts/test/2026-10-19.jsonl',
+			'{"at":"2026-10-19T11:00:00.000Z","id":1,"kind":"us'
+		)
+		faux.setResponses([fauxAssistantMessage('fine')])
+		const ghost = await openOn(':memory:', undefined, world)
+
+		await ghost.ask('Still there?', { id: '1' })
+		await ghost.close()
+
+		const text = dec(await world.readFile('/system/agents/main/transcripts/test/2026-10-19.jsonl'))
+		expect(text.split('\n')[0]).toBe('{"at":"2026-10-19T11:00:00.000Z","id":1,"kind":"us')
+		expect(parseLines(text)).toMatchObject([
+			{ kind: 'user', text: 'Still there?' },
+			{ kind: 'assistant', text: 'fine' }
+		])
+	})
+
+	it('carries on from an older day when the newest file holds only a half line', async () => {
+		const world = volume(memStore())
+		faux.setResponses([fauxAssistantMessage('one'), () => fauxAssistantMessage('two')])
+		const path = join(dir, 'state.sqlite')
+		const first = await openOn(path, undefined, world)
+		await first.ask('First.', { id: '1' })
+		await first.close()
+		await put(world, '/system/agents/main/transcripts/test/2026-10-20.jsonl', '{"at":"2026-10-20')
+
+		vi.setSystemTime(new Date('2026-10-20T12:00:00Z'))
+		const second = await openOn(path, undefined, world)
+		await second.ask('Second.', { id: '2' })
+		await second.close()
+
+		expect(await mirrorOf(world)).toMatchObject([
+			{ kind: 'user', text: 'First.' },
+			{ kind: 'assistant', text: 'one' }
+		])
+		const text = dec(await world.readFile('/system/agents/main/transcripts/test/2026-10-20.jsonl'))
+		expect(text.split('\n')[0]).toBe('{"at":"2026-10-20')
+		expect(parseLines(text)).toMatchObject([
+			{ kind: 'user', text: 'Second.' },
+			{ kind: 'assistant', text: 'two' }
+		])
+	})
+
+	it('keeps the newest entry in the newest file when the day goes back', async () => {
+		const world = volume(memStore())
+		const path = join(dir, 'state.sqlite')
+		faux.setResponses([
+			fauxAssistantMessage('one'),
+			fauxAssistantMessage('two'),
+			fauxAssistantMessage('three')
+		])
+		// 2026-10-20 in Auckland, then 2026-10-19 in UTC.
+		for (const [i, timeZone] of ['Pacific/Auckland', 'UTC', 'UTC'].entries()) {
+			const ghost = await openOn(path, undefined, world, { timeZone })
+			await ghost.ask(`Turn ${i}.`, { id: String(i) })
+			await ghost.close()
+		}
+
+		expect(await world.exists('/system/agents/main/transcripts/test/2026-10-19.jsonl')).toBe(false)
+		expect(await mirrorOf(world, 'test', '2026-10-20')).toMatchObject([
+			{ kind: 'user', text: 'Turn 0.' },
+			{ kind: 'assistant', text: 'one' },
+			{ kind: 'user', text: 'Turn 1.' },
+			{ kind: 'assistant', text: 'two' },
+			{ kind: 'user', text: 'Turn 2.' },
+			{ kind: 'assistant', text: 'three' }
+		])
+	})
+
+	it('writes the shell record at open and again after a turn', async () => {
+		const world = volume(memStore())
+		const ghost = await openOn(':memory:', [long], world)
+		const recordOf = async () =>
+			JSON.parse(dec(await world.readFile('/system/agents/main/shells/test.json')))
+
+		expect(await recordOf()).toEqual({
+			id: 'test',
+			name: 'Test',
+			kind: 'test',
+			capabilities: ['read', 'write', 'edit', 'bash', 'transcript', 'long'],
+			lastSeen: NOW.toISOString()
+		})
+
+		const later = new Date(NOW.getTime() + 60_000)
+		vi.setSystemTime(later)
+		faux.setResponses([fauxAssistantMessage('ok')])
+		await ghost.ask('Hi', { id: 'h' })
+
+		await vi.waitFor(async () => {
+			expect((await recordOf()).lastSeen >= later.toISOString()).toBe(true)
+		})
+	})
+
+	it("answers from another shell's transcript with transcript search and show", async () => {
+		const world = volume(memStore())
+		const laptop = { id: 'laptop', name: 'Laptop', kind: 'mac' }
+		const desk = { id: 'desk', name: 'Desk', kind: 'mac' }
+		faux.setResponses([fauxAssistantMessage('Pot it in peat-free compost.')])
+		const first = await openOn(
+			':memory:',
+			undefined,
+			world,
+			{ timeZone: 'Pacific/Auckland' },
+			laptop
+		)
+		await first.ask('How do I repot the fern?', { id: '1' })
+		await first.close()
+
+		let found = ''
+		faux.setResponses([
+			...calls(
+				['transcript', { action: 'search', query: 'FERN repot' }],
+				['transcript', { action: 'show', shell: 'laptop', date: '2026-10-20', range: '2' }]
+			),
+			(context) => {
+				found = JSON.stringify(context.messages)
+				return fauxAssistantMessage('You were repotting the fern on the laptop.')
+			}
+		])
+		const second = await openOn(
+			':memory:',
+			undefined,
+			world,
+			{ timeZone: 'Pacific/Auckland' },
+			desk
+		)
+		const settled = await second.ask('What was I doing in the other shell?', { id: 'q' })
+
+		expect(settled).toMatchObject({ text: 'You were repotting the fern on the laptop.' })
+		const [search, show] = toolResults(second)
+		expect(search?.text).toBe(
+			'Times in Pacific/Auckland.\nlaptop 2026-10-20 #1 01:00 user: How do I repot the fern?'
+		)
+		expect(show?.text).toBe(
+			'Shell laptop, 2026-10-20, times in Pacific/Auckland.\n#2 01:00 assistant: Pot it in peat-free compost.'
+		)
+		expect(found).toContain('Pot it in peat-free compost.')
 	})
 })

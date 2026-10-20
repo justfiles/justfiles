@@ -24,10 +24,12 @@ import {
 } from '@earendil-works/pi-durable/tools'
 import { volumeEnv } from './env.ts'
 import { classifyFailure } from './failure.ts'
+import { createMirror, writeShellRecord } from './mirror.ts'
 import { createNotes } from './notes.ts'
 import { ghostSections } from './sections.ts'
 import { DEFAULT_TIMEZONE } from './timezone.ts'
 import { ASK, createTranscript, text } from './transcript.ts'
+import { transcriptTool } from './transcript-tool.ts'
 import type { Ghost, GhostDeps, GhostSettings, Tool, TranscriptEvent } from './types.ts'
 
 const context = BACKGROUND_CONTEXT
@@ -58,12 +60,14 @@ async function open(deps: GhostDeps, env: ReturnType<typeof volumeEnv>): Promise
 	})
 	const registry = createRegistry()
 	const volumeTools = [createReadTool(), createWriteTool(), createEditTool(), createBashTool()]
+	const ownTools = [transcriptTool(deps.volume, timeZone)]
+	const capabilities = [...volumeTools, ...ownTools, ...(deps.tools ?? [])].map((tool) => tool.name)
 	registry.install(
 		defineExtension({
 			name: 'ghost',
 			tools: [
 				...volumeTools.map((tool) => inAskedCwd(tool, env.at)),
-				...(deps.tools ?? []).map(toPiTool)
+				...[...ownTools, ...(deps.tools ?? [])].map(toPiTool)
 			],
 			sections: ghostSections({
 				volume: deps.volume,
@@ -105,12 +109,48 @@ async function open(deps: GhostDeps, env: ReturnType<typeof volumeEnv>): Promise
 	const root = await harness.root(context)
 	if (model !== undefined) await root.configure({ model }, context)
 
+	// The mirror reads pi's entries, not the stream, so it also has those a reset or compaction
+	// hides; the stream only says when to look.
+	const mirror = createMirror({
+		volume: deps.volume,
+		shellId: deps.shell.id,
+		timeZone,
+		async *scan(after) {
+			let cursor: Cursor | undefined
+			do {
+				const query = { minEntryId: after as EntryId | undefined, order: 'ascending' as const }
+				const page = await root.entries(query, 50, cursor, context)
+				for (const entry of page.items) if (after === undefined || entry.id > after) yield entry
+				cursor = page.next
+			} while (cursor !== undefined)
+		}
+	})
+	// The shell record is written at open and at each turn's start and end, one write at a time.
+	let recording = Promise.resolve()
+	const record = () => {
+		recording = recording
+			.then(() => writeShellRecord(deps.volume, deps.shell, capabilities))
+			.catch(() => {})
+		return recording
+	}
+	await record()
+
 	// One pi stream feeds every watcher; each starts from the transcript's current snapshot.
 	const stream = await watchEvents(harness, root.id, context)
 	const transcript = createTranscript(stream.snapshot)
 	const listeners = new Set<(event: TranscriptEvent) => void>()
+	let busy = transcript.current().status.busy
 	stream.start(async (events) => {
-		for (const event of transcript.apply(events))
+		const changes = transcript.apply(events)
+		for (const event of changes) {
+			if (event.type === 'entry' || event.type === 'snapshot') void mirror.sync()
+			const status = event.type === 'status' || event.type === 'snapshot' ? event.status : undefined
+			if (status !== undefined && status.busy !== busy) {
+				busy = status.busy
+				void record()
+			}
+		}
+		for (const event of changes)
 			for (const listener of listeners) {
 				// A throw from pi's listener would end the stream for every watcher; drop just this one.
 				try {
@@ -121,6 +161,7 @@ async function open(deps: GhostDeps, env: ReturnType<typeof volumeEnv>): Promise
 			}
 	})
 	harness.resume()
+	void mirror.sync()
 
 	// Note work runs one at a time under the ghost's lifetime; `close` cancels and awaits it.
 	// It starts with a reset whose note a process that died first left untaken.
@@ -201,7 +242,12 @@ async function open(deps: GhostDeps, env: ReturnType<typeof volumeEnv>): Promise
 			await noting
 			listeners.clear()
 			await stream.stop()
+			// An idle ghost leaves its mirror whole. A running turn is cut off where it is instead
+			// of waiting for the mirror, which catches up at the next open.
+			if (!busy) await mirror.sync()
 			await harness.close(context)
+			await mirror.stop()
+			await recording
 			await env.close()
 		}
 	}
