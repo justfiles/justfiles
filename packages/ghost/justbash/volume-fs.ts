@@ -24,7 +24,7 @@ import type { BufferEncoding, FileContent, FsStat, IFileSystem } from 'just-bash
  *   - link() (hard links) — Volume has no hard links; reject with ENOSYS.
  *
  * `deny` is a hard, uniform read boundary (the ghost denies `/private`): because every
- * command (cat, find, tar, sqlite3, jq…) reaches the Volume through this one object,
+ * command (cat, find, tar, jq…) reaches the Volume through this one object,
  * denying here cannot be routed around by a cleverer command line. It checks the path as
  * named and the path its symlinks lead to, so `ln -s / /alias` opens no way in either.
  *

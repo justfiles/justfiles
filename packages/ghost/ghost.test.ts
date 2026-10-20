@@ -769,6 +769,26 @@ describe('transcript mirror, shell record and transcript tool', () => {
 		expect(ids).toEqual([...new Set(ids)].sort((a, b) => a - b))
 	})
 
+	it('dates the entries watchers see, in the snapshot too', async () => {
+		const ghost = await openOn(':memory:')
+		const events = record(ghost)
+		faux.setResponses([fauxAssistantMessage('said')])
+
+		await ghost.ask('Talk.', { id: '1' })
+
+		const said = [
+			{ at: NOW.toISOString(), kind: 'user' },
+			{ at: NOW.toISOString(), kind: 'assistant' }
+		]
+		await vi.waitFor(() =>
+			expect(
+				events.flatMap((event) => (event.type === 'entry' ? [event.entry] : []))
+			).toMatchObject(said)
+		)
+		expect(snapshotOf(ghost).transcript.entries).toMatchObject(said)
+		await ghost.close()
+	})
+
 	it('starts a new line after one a dying process left half written', async () => {
 		const world = volume(memStore())
 		await put(

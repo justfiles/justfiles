@@ -133,6 +133,13 @@ export function createTranscript(snapshot: SnapshotEvent) {
 
 /** Our record of one pi entry; undefined for bookkeeping the transcript does not show. */
 export function toEntry(record: EntryRecord): TranscriptEntry | undefined {
+	const entry = untimed(record)
+	const timestamp = record.model?.[0]?.timestamp
+	if (entry === undefined || timestamp === undefined) return entry
+	return { ...entry, at: new Date(timestamp).toISOString() }
+}
+
+function untimed(record: EntryRecord): TranscriptEntry | undefined {
 	const message = record.model?.[0]
 	const id = record.id
 	switch (record.kind) {

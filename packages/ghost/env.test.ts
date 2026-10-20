@@ -48,4 +48,18 @@ describe('volumeEnv exec', () => {
 		expect(getOrThrow(await shell.readTextFile(path, BACKGROUND_CONTEXT))).toBe('1\n2\n3\n4\n5\n')
 		await env.close()
 	})
+
+	it('has no sqlite3, which the one-file bundle cannot start', async () => {
+		const env = volumeEnv(volume(memStore()))
+		const shell = env.at('/')
+
+		const sqlite = getOrThrow(
+			await shell.exec('sqlite3 :memory: "select 1"', {}, BACKGROUND_CONTEXT)
+		)
+		const jq = getOrThrow(await shell.exec('echo 1 | jq .', {}, BACKGROUND_CONTEXT))
+
+		expect(sqlite.exitCode).toBe(127)
+		expect(jq.exitCode).toBe(0)
+		await env.close()
+	})
 })
