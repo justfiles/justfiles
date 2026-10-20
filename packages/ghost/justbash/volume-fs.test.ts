@@ -121,6 +121,10 @@ describe('mutation', () => {
 				code: 'EINVAL'
 			})
 		expect(await fs.readdir('/src')).toEqual(['a'])
+		await expect(fs.cp('/', '/backup', { recursive: true })).rejects.toMatchObject({
+			code: 'EINVAL'
+		})
+		expect(await fs.exists('/backup')).toBe(false)
 	})
 
 	test('mv renames', async () => {
