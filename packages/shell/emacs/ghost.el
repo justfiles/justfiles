@@ -234,7 +234,8 @@ HOW is `ask', `steer', or a marker to insert the answer at."
 (defun ghost--ask (text dir how)
   "Send TEXT from DIR as HOW says; see `ghost--start'.
 Only the answer's `settled' and errors are read here: `*ghost*' draws the
-rest from the watch."
+rest from the watch, which may have ended while the ask was written."
+  (ghost--ensure-watch)
   (unless (markerp how) (ghost--show))
   (let ((default-directory (ghost--local-dir dir)))
     (make-process
@@ -314,9 +315,10 @@ rest from the watch."
   "Call FN on each whole line PROC wrote, CHUNK being the newest part."
   (let ((pending (concat (process-get proc 'ghost-pending) chunk))
         (start 0))
-    (while (string-match "\n" pending start)
-      (funcall fn (substring pending start (match-beginning 0)))
-      (setq start (match-end 0)))
+    ;; FN may search, which changes the match data.
+    (while-let ((end (string-search "\n" pending start)))
+      (funcall fn (substring pending start end))
+      (setq start (1+ end)))
     (process-put proc 'ghost-pending (substring pending start))))
 
 (defun ghost--parse (line)

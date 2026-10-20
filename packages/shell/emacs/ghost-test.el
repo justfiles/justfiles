@@ -24,6 +24,8 @@
          (ghost--calls (make-hash-table :test #'equal)))
      (when (get-buffer "*ghost*") (kill-buffer "*ghost*"))
      (unwind-protect (progn ,@body)
+       (ghost--stop-watch)
+       (when ghost--idle-timer (cancel-timer ghost--idle-timer))
        (when (get-buffer "*ghost*") (kill-buffer "*ghost*")))))
 
 (defun ghost-test--text ()
@@ -212,17 +214,42 @@
       (delete-file file)
       (delete-directory ghost-root t))))
 
+(ert-deftest ghost-test-reads-every-line-of-a-chunk-that-makes-buttons ()
+  (let* ((root (make-temp-file "ghost-root" t))
+         (ghost-root root)
+         (proc (make-pipe-process :name "ghost-test" :noquery t)))
+    (unwind-protect
+        (ghost-test--with-transcript
+         (write-region "" nil (expand-file-name "core.md" root))
+         (ghost--lines
+          proc
+          (concat "{\"type\":\"snapshot\",\"transcript\":{\"entries\":[]},"
+                  "\"status\":{\"busy\":false,\"queued\":0}}\n"
+                  "{\"type\":\"entry\",\"entry\":{\"id\":1,\"kind\":\"user\","
+                  "\"text\":\"See /core.md and 20261020T151948\",\"askId\":\"a\"}}\n"
+                  "{\"type\":\"entry\",\"entry\":{\"id\":2,\"kind\":\"assistant\","
+                  "\"text\":\"Seen.\",\"toolCalls\":[]}}\n{\"type\":")
+          (lambda (line) (ghost--watch-line proc line)))
+         (should (string-match-p
+                  "\\`[0-9:]+ you › See /core.md and 20261020T151948\n[0-9:]+ ghost › Seen\\.\n\\'"
+                  (ghost-test--text)))
+         (should-not (process-get proc 'ghost-stderr))
+         (should (equal (process-get proc 'ghost-pending) "{\"type\":")))
+      (delete-process proc)
+      (delete-directory root t))))
+
 (defun ghost-test--program (dir)
-  "Write a fake `ghost' into DIR that logs its arguments and cwd."
+  "Write a fake `ghost' into DIR that logs its arguments and cwd per command."
   (let ((program (expand-file-name "ghost" dir)))
     (write-region
      (concat "#!/bin/sh\n"
-             "printf '%s\\n' \"$(pwd -P)\" \"$@\" > \"$(dirname \"$0\")/args\"\n"
+             "printf '%s\\n' \"$(pwd -P)\" \"$@\" > \"$(dirname \"$0\")/$1.args\"\n"
              "echo '{\"type\":\"snapshot\",\"transcript\":{\"entries\":[]},"
              "\"status\":{\"busy\":true,\"queued\":0}}'\n"
              "echo 'ghost: a line on stderr' >&2\n"
              "echo '{\"type\":\"settled\",\"id\":\"x\",\"status\":\"done\","
-             "\"text\":\"the answer\"}'\n")
+             "\"text\":\"the answer\"}'\n"
+             "[ \"$1\" = watch ] && exec sleep 30\n")
      nil program)
     (set-file-modes program #o755)
     program))
@@ -238,10 +265,12 @@
            (let ((marker (point-marker)))
              (ghost--ask "-not an option" dir marker)
              (should (= ghost--asks 1))
+             ;; The watch may have ended while the ask was written.
+             (should (process-live-p ghost--watch))
              (while (> ghost--asks 0) (accept-process-output nil 0.05))
              (should (equal (buffer-string) "before:the answer"))))
          (should (equal (with-temp-buffer
-                          (insert-file-contents (expand-file-name "args" dir))
+                          (insert-file-contents (expand-file-name "ask.args" dir))
                           (split-string (buffer-string) "\n" t))
                         (list (directory-file-name (file-truename dir))
                               "ask" "--json" "--" "-not an option"))))
