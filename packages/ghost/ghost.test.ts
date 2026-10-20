@@ -55,8 +55,13 @@ async function openOn(
 }
 
 /** A ghost on `state` that rotates it past `maxBytes`. */
-async function openBounded(state: StateDatabase, world: Volume, maxBytes: number) {
-	const ghost = await openRotating(depsOn(state, world), maxBytes)
+async function openBounded(
+	state: StateDatabase,
+	world: Volume,
+	maxBytes: number,
+	settings: GhostSettings = {}
+) {
+	const ghost = await openRotating(depsOn(state, world, undefined, settings), maxBytes)
 	open.push(ghost)
 	return ghost
 }
@@ -1027,7 +1032,7 @@ describe('nightly consolidation', () => {
 	it("rotates state that outgrew its bound after the night's work", async () => {
 		const world = volume(memStore())
 		const state = await openNodeSqliteState(':memory:')
-		faux.setResponses([fauxAssistantMessage('one')])
+		faux.setResponses([fauxAssistantMessage('one'), fauxAssistantMessage('- Asked once.')])
 		const ghost = await openBounded(state, world, 1024 * 1024)
 		await ghost.ask('first', { id: '1' })
 		// Two megabytes the next generation leaves behind with the rest of this one.
@@ -1075,6 +1080,52 @@ describe('state rotation', () => {
 			{ kind: 'user', text: 'third' },
 			{ kind: 'assistant', text: 'three' }
 		])
+	})
+
+	it('keeps the old generation when its note fails, and rotates once one is taken', async () => {
+		const path = join(dir, 'state.sqlite')
+		const world = volume(memStore())
+		let notesFail = true
+		// Notes fail until told otherwise; every other request is answered 'ok'.
+		faux.setResponses(
+			Array.from({ length: 20 }, () => (context: { messages: readonly object[] }) => {
+				const [system] = context.messages as { role: string; content?: unknown }[]
+				if (system?.role !== 'system' || !String(system.content).startsWith('You are extracting'))
+					return fauxAssistantMessage('ok')
+				return notesFail
+					? fauxAssistantMessage('', { stopReason: 'error', errorMessage: 'down' })
+					: fauxAssistantMessage('- Asked.')
+			})
+		)
+		const first = await openOn(path, undefined, world)
+		await first.ask('first', { id: '1' })
+		await first.close()
+
+		const ghost = await openBounded(await openNodeSqliteState(path), world, 0)
+		await ghost.ask('second', { id: '2' })
+		const state = await openNodeSqliteState(path)
+		expect(await tables(state)).toContain('entries')
+		await state.close()
+
+		// The next check, after the next ask, tries again.
+		notesFail = false
+		await ghost.ask('third', { id: '3' })
+		await vi.waitFor(() => expect(snapshotOf(ghost).transcript.entries).toEqual([]))
+		expect(await dailyOf(world, today())).toBe('- Asked.\n')
+	})
+
+	it('rotates after an ask on a shell that does not consolidate', async () => {
+		const world = volume(memStore())
+		const state = await openNodeSqliteState(':memory:')
+		faux.setResponses([fauxAssistantMessage('one'), fauxAssistantMessage('')])
+		const ghost = await openBounded(state, world, 1024 * 1024, { consolidate: false })
+		await state.exec('CREATE TABLE ballast (bytes BLOB)')
+		await state.run('INSERT INTO ballast VALUES (zeroblob(2097152))')
+
+		await ghost.ask('first', { id: '1' })
+
+		await vi.waitFor(() => expect(snapshotOf(ghost).transcript.entries).toEqual([]))
+		expect((await tables(state)).filter((name) => !/^(g1_|ghost_state$)/.test(name))).toEqual([])
 	})
 
 	it('drops the old generation at open when the process died before it did', async () => {

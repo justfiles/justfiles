@@ -55,8 +55,9 @@ const NOTE_MEMO = 'ghost.note'
 const NOTED = 'ghost.noted'
 
 /**
- * State above this many bytes moves to a fresh generation at the next check: at open, and
- * after each night's consolidation. A measured ask with two tool rounds stores about 10 KB.
+ * State above this many bytes moves to a fresh generation at the next check: at open, after
+ * each ask and after each night's consolidation. A measured ask with two tool rounds stores
+ * about 10 KB.
  */
 const ROTATE_BYTES = 64 * 1024 * 1024
 
@@ -67,15 +68,16 @@ export function openGhost(deps: GhostDeps): Promise<Ghost> {
 
 /**
  * The ghost over generations of its state, rotating to a fresh one once the state holds more
- * than `maxBytes`. A rotation is a new session, its note taken, in a new generation; calls
- * made meanwhile wait for it, and watchers get the new generation's snapshot.
+ * than `maxBytes`. A rotation takes the old generation's notes, then starts afresh in a new
+ * one, as a new session would; calls made meanwhile wait for it, and watchers get the new
+ * generation's snapshot.
  */
 export async function openRotating(deps: GhostDeps, maxBytes: number): Promise<Ghost> {
 	const db = deps.state
 	// The day the next consolidation starts at, carried into a new generation's task.
 	let from: string | undefined
 	let generation = 0
-	let current!: Ghost
+	let current!: Generation
 	let opened = false
 	const listeners = new Set<(event: TranscriptEvent) => void>()
 	let unwatch = () => {}
@@ -134,7 +136,8 @@ export async function openRotating(deps: GhostDeps, maxBytes: number): Promise<G
 		if ((await liveBytes(db)) <= maxBytes) return
 		await Promise.allSettled(calls)
 		if (closed) return
-		await current.newSession()
+		// A note that fails keeps this generation, so its context is there for the next try.
+		await current.retire()
 		if (closed) return
 		switching = true
 		unwatch()
@@ -151,7 +154,7 @@ export async function openRotating(deps: GhostDeps, maxBytes: number): Promise<G
 		}
 	}
 
-	async function call<T>(run: (ghost: Ghost) => Promise<T>): Promise<T> {
+	async function call<T>(run: (ghost: Generation) => Promise<T>): Promise<T> {
 		while (rotating !== undefined) await rotating
 		if (broken !== undefined) throw broken
 		const running = run(current)
@@ -164,7 +167,11 @@ export async function openRotating(deps: GhostDeps, maxBytes: number): Promise<G
 	}
 
 	return {
-		ask: (text, opts) => call((ghost) => ghost.ask(text, opts)),
+		// Checked after every ask too, so a shell that never consolidates stays bounded.
+		ask: (text, opts) =>
+			call((ghost) => ghost.ask(text, opts)).finally(() => {
+				check()
+			}),
 		// Not held back by a rotation, which waits for the very calls an abort ends.
 		abort: () => current.abort(),
 		newSession: (handoff) => call((ghost) => ghost.newSession(handoff)),
@@ -197,6 +204,15 @@ function unclosable(db: StateDatabase): StateDatabase {
 	}
 }
 
+/** The ghost on one generation, and the last word on it before a rotation drops it. */
+interface Generation extends Ghost {
+	/**
+	 * Take the notes this generation still owes the daily file: a reset's note left untaken,
+	 * and the active context's. Waits for idle; rejects when a note fails.
+	 */
+	retire(): Promise<void>
+}
+
 interface GenerationOptions {
 	state: StateDatabase
 	prefix: string | undefined
@@ -206,7 +222,7 @@ interface GenerationOptions {
 }
 
 /** The ghost on one generation of its state. */
-async function openOn(deps: GhostDeps, opts: GenerationOptions): Promise<Ghost> {
+async function openOn(deps: GhostDeps, opts: GenerationOptions): Promise<Generation> {
 	const env = volumeEnv(deps.volume)
 	return open(deps, env, opts).catch(async (error) => {
 		await env.close()
@@ -218,7 +234,7 @@ async function open(
 	deps: GhostDeps,
 	env: ReturnType<typeof volumeEnv>,
 	opts: GenerationOptions
-): Promise<Ghost> {
+): Promise<Generation> {
 	const model = deps.settings?.model
 	const timeZone = deps.settings?.timeZone ?? DEFAULT_TIMEZONE
 	const notes = createNotes({
@@ -430,6 +446,13 @@ async function open(
 			listener(transcript.current())
 			listeners.add(listener)
 			return () => listeners.delete(listener)
+		},
+		async retire() {
+			await noting
+			await noteNewestReset(alive.context)
+			await root.waitForIdle(context)
+			const { messages } = await root.context(context)
+			await notes.append(await notes.take(messages, alive.context.abortSignal))
 		},
 		async close() {
 			alive.cancel()

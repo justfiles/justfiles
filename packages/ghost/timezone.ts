@@ -35,10 +35,19 @@ function dayAfter(day: string): string {
 	return new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10)
 }
 
-// The instant `day` reads `hour`:00 in `tz`, copied from packages/agent/timezone.ts.
+/**
+ * The instant `day` reads `hour`:00 in `tz`. The offset is taken again at the first guess,
+ * since on a day the clocks change the offset at `hour` UTC is not the one at `hour` local.
+ */
 function zonedTimeToUtcMs(day: string, hour: number, tz: string): number {
 	const [y, m, d] = day.split('-').map(Number) as [number, number, number]
 	const asUtc = Date.UTC(y, m - 1, d, hour)
+	const guess = asUtc - offsetAt(asUtc, tz)
+	return asUtc - offsetAt(guess, tz)
+}
+
+/** How far `tz`'s wall clock is ahead of UTC at `at`, in ms. */
+function offsetAt(at: number, tz: string): number {
 	const parts = new Intl.DateTimeFormat('en-GB', {
 		timeZone: tz,
 		year: 'numeric',
@@ -48,9 +57,9 @@ function zonedTimeToUtcMs(day: string, hour: number, tz: string): number {
 		minute: '2-digit',
 		second: '2-digit',
 		hour12: false
-	}).formatToParts(new Date(asUtc))
+	}).formatToParts(new Date(at))
 	const get = (t: string) => Number(parts.find((p) => p.type === t)?.value)
-	const displayedUtc = Date.UTC(
+	const wall = Date.UTC(
 		get('year'),
 		get('month') - 1,
 		get('day'),
@@ -58,7 +67,7 @@ function zonedTimeToUtcMs(day: string, hour: number, tz: string): number {
 		get('minute'),
 		get('second')
 	)
-	return asUtc + (asUtc - displayedUtc)
+	return wall - (at - (at % 1000))
 }
 
 // Returns ISO 8601 with timezone offset, e.g. "2026-05-04T10:30:00-04:00".
