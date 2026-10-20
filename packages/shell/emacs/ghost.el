@@ -102,6 +102,9 @@ answer; use it for a system notification."
 (defvar ghost--idle-timer nil
   "Ends the watch once `*ghost*' was hidden for `ghost-watch-idle-time'.")
 
+(defvar ghost--restart-timer nil
+  "Starts the watch again after it lost its daemon.")
+
 (defvar ghost--asks 0
   "How many `ghost ask' processes are running.")
 
@@ -403,7 +406,10 @@ rest from the watch, which may have ended while the ask was written."
     (ghost--arm-idle)))
 
 (defun ghost--stop-watch ()
-  "End the watch, which lets the daemon go idle."
+  "End the watch, which lets the daemon go idle, and do not start it again."
+  (when ghost--restart-timer
+    (cancel-timer ghost--restart-timer)
+    (setq ghost--restart-timer nil))
   (when (process-live-p ghost--watch)
     (process-put ghost--watch 'ghost-stopping t)
     (delete-process ghost--watch))
@@ -426,7 +432,10 @@ rest from the watch, which may have ended while the ask was written."
     (if (process-get proc 'ghost-connected)
         ;; The daemon went away, killed or restarting after a login; the CLI
         ;; starts the next one.
-        (run-at-time 1 nil #'ghost--ensure-watch)
+        (setq ghost--restart-timer
+              (run-at-time 1 nil (lambda ()
+                                   (setq ghost--restart-timer nil)
+                                   (ghost--ensure-watch))))
       (message "ghost watch: %s"
                (or (process-get proc 'ghost-stderr) "exited")))))
 

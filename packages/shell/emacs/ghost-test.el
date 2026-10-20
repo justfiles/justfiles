@@ -19,7 +19,7 @@
 (defmacro ghost-test--with-transcript (&rest body)
   "Run BODY with a fresh `*ghost*' and no watch."
   `(let ((ghost--watch nil) (ghost--status nil) (ghost--unseen nil)
-         (ghost--idle-timer nil) (ghost--asks 0) (ghost--partial nil)
+         (ghost--idle-timer nil) (ghost--restart-timer nil) (ghost--asks 0) (ghost--partial nil)
          (ghost--answering nil) (ghost--last-answer nil)
          (ghost--calls (make-hash-table :test #'equal)))
      (when (get-buffer "*ghost*") (kill-buffer "*ghost*"))
@@ -118,6 +118,20 @@
                                                 :text "Hallo." :toolCalls []))))
    (should (string-match-p "▸ read {}\n.*ghost › Hallo\\.\n\\'"
                            (ghost-test--text)))))
+
+(ert-deftest ghost-test-does-not-restart-a-watch-stopped-while-it-waits ()
+  (ghost-test--with-transcript
+   (let ((proc (make-pipe-process :name "ghost-test" :noquery t)))
+     (setq ghost--watch proc)
+     (process-put proc 'ghost-connected t)
+     (delete-process proc)
+     (ghost--watch-ended proc "deleted")
+     (should (timerp ghost--restart-timer))
+     (let ((timer ghost--restart-timer))
+       (ghost--buffer)
+       (kill-buffer "*ghost*")
+       (should-not ghost--restart-timer)
+       (should-not (memq timer timer-list))))))
 
 (ert-deftest ghost-test-marks-entries-that-answer-no-ask ()
   (ghost-test--with-transcript
