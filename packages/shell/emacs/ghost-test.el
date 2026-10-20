@@ -1,0 +1,281 @@
+;;; ghost-test.el --- Tests for ghost.el -*- lexical-binding: t; -*-
+
+;; Run from this directory:
+;;   emacs -Q --batch -L . -l ghost-test.el -f ert-run-tests-batch-and-exit
+
+;;; Code:
+
+(require 'ert)
+(require 'ghost)
+
+(defun ghost-test--entry (&rest fields)
+  "A transcript entry alist from FIELDS, a plist."
+  (let (entry)
+    (while fields
+      (push (cons (intern (substring (symbol-name (pop fields)) 1)) (pop fields))
+            entry))
+    (nreverse entry)))
+
+(defmacro ghost-test--with-transcript (&rest body)
+  "Run BODY with a fresh `*ghost*' and no watch."
+  `(let ((ghost--watch nil) (ghost--status nil) (ghost--unseen nil)
+         (ghost--idle-timer nil) (ghost--asks 0) (ghost--partial nil)
+         (ghost--answering nil) (ghost--last-answer nil)
+         (ghost--calls (make-hash-table :test #'equal)))
+     (when (get-buffer "*ghost*") (kill-buffer "*ghost*"))
+     (unwind-protect (progn ,@body)
+       (when (get-buffer "*ghost*") (kill-buffer "*ghost*")))))
+
+(defun ghost-test--text ()
+  "The visible text of `*ghost*'."
+  (with-current-buffer "*ghost*"
+    (let ((text "") (pos (point-min)))
+      (while (< pos (point-max))
+        (let ((next (next-char-property-change pos)))
+          (unless (invisible-p pos)
+            (setq text (concat text (buffer-substring-no-properties pos next))))
+          (setq pos next)))
+      text)))
+
+(defun ghost-test--snapshot (&rest entries)
+  "A snapshot event of ENTRIES, idle."
+  `((type . "snapshot")
+    (transcript (entries . ,(vconcat entries)))
+    (status (busy) (queued . 0))))
+
+(ert-deftest ghost-test-renders-a-turn-with-folded-tool-calls ()
+  (ghost-test--with-transcript
+   (ghost--event
+    (ghost-test--snapshot
+     (ghost-test--entry :id 1 :kind "user" :text "Read it." :askId "a"
+                        :at "2026-10-21T09:05:00Z")
+     (ghost-test--entry :id 2 :kind "assistant" :text ""
+                        :toolCalls `[((id . "c1") (name . "read")
+                                      (args (path . "/notes.md")))])
+     (ghost-test--entry :id 3 :kind "tool" :callId "c1" :name "read"
+                        :text "the notes" :isError nil)
+     (ghost-test--entry :id 4 :kind "assistant" :text "Done." :toolCalls [])))
+   (let ((text (ghost-test--text)))
+     (should (string-match-p "you › Read it\\." text))
+     (should (string-match-p "  ▸ read {\"path\":\"/notes.md\"}\n.*ghost › Done\\."
+                             text))
+     (should-not (string-match-p "the notes" text))
+     (should-not (string-match-p "◆" text)))
+   (with-current-buffer "*ghost*"
+     (goto-char (point-min))
+     (search-forward "▸ read")
+     (ghost-toggle-call)
+     (should (string-match-p "▾ read .*\n.*\n    result:\n      the notes"
+                             (ghost-test--text)))
+     (ghost-toggle-call)
+     (should-not (string-match-p "the notes" (ghost-test--text))))
+   (should (equal ghost--last-answer "Done."))))
+
+(ert-deftest ghost-test-streams-an-answer-and-replaces-it-with-the-entry ()
+  (ghost-test--with-transcript
+   (ghost--event (ghost-test--snapshot
+                  (ghost-test--entry :id 1 :kind "user" :text "Hi" :askId "a")))
+   (ghost--event '((type . "text") (delta . "Hel")))
+   (ghost--event '((type . "text") (delta . "lo")))
+   (should (string-suffix-p "ghost › Hello" (ghost-test--text)))
+   ;; An input that arrives meanwhile goes above the answer being written.
+   (ghost--event `((type . "entry")
+                   (entry . ,(ghost-test--entry :id 2 :kind "user"
+                                                :text "And?" :askId "b"))))
+   (should (string-match-p "you › And\\?\n.*ghost › Hello\\'" (ghost-test--text)))
+   (ghost--event `((type . "entry")
+                   (entry . ,(ghost-test--entry :id 3 :kind "assistant"
+                                                :text "Hello there."
+                                                :toolCalls []))))
+   (let ((text (ghost-test--text)))
+     (should (string-suffix-p "ghost › Hello there.\n" text))
+     (should-not (string-match-p "Hello\\(\n\\|\\'\\)" text)))
+   (should-not ghost--partial)))
+
+(ert-deftest ghost-test-marks-entries-that-answer-no-ask ()
+  (ghost-test--with-transcript
+   (ghost--event
+    (ghost-test--snapshot
+     (ghost-test--entry :id 1 :kind "reset" :handoff "Carry on.")
+     (ghost-test--entry :id 2 :kind "assistant" :text "On my own."
+                        :toolCalls [])))
+   (let ((text (ghost-test--text)))
+     (should (string-match-p "new session" text))
+     (should (string-match-p "Carry on\\." text))
+     (should (string-match-p "◆ ghost › On my own\\." text)))))
+
+(ert-deftest ghost-test-moves-between-turns ()
+  (ghost-test--with-transcript
+   (ghost--event
+    (ghost-test--snapshot
+     (ghost-test--entry :id 1 :kind "user" :text "One" :askId "a")
+     (ghost-test--entry :id 2 :kind "assistant" :text "Two\nlines"
+                        :toolCalls [])))
+   (with-current-buffer "*ghost*"
+     (goto-char (point-min))
+     (ghost-next-turn)
+     (should (looking-at ".* ghost › Two"))
+     (should-error (ghost-next-turn) :type 'user-error)
+     (ghost-previous-turn)
+     (should (looking-at ".* you › One")))))
+
+(ert-deftest ghost-test-makes-buttons-of-paths-and-task-ids ()
+  (let* ((root (make-temp-file "ghost-root" t))
+         (ghost-root root))
+    (unwind-protect
+        (ghost-test--with-transcript
+         (make-directory (expand-file-name "system" root))
+         (write-region "" nil (expand-file-name "system/core.md" root))
+         (ghost--event
+          (ghost-test--snapshot
+           (ghost-test--entry
+            :id 1 :kind "assistant" :toolCalls []
+            :text "See /system/core.md:3, not /missing.md, and 20261020T151948.")))
+         (with-current-buffer "*ghost*"
+           (goto-char (point-min))
+           (search-forward "/system")
+           (let ((button (button-at (point))))
+             (should button)
+             (should (equal (button-label button) "/system/core.md:3"))
+             (should (equal (button-get button 'ghost-file)
+                            (expand-file-name "system/core.md" root)))
+             (should (equal (button-get button 'ghost-line) 3)))
+           (search-forward "/missing")
+           (should-not (button-at (point)))
+           (search-forward "20261020")
+           (should (equal (button-get (button-at (point)) 'ghost-task)
+                          "20261020T151948"))))
+      (delete-directory root t))))
+
+(ert-deftest ghost-test-marks-an-answer-that-arrives-hidden ()
+  (ghost-test--with-transcript
+   (let* ((notified nil)
+          (ghost-notify-functions (list (lambda (entry) (push entry notified)))))
+     (ghost--event (ghost-test--snapshot))
+     (ghost--event `((type . "entry")
+                     (entry . ,(ghost-test--entry :id 1 :kind "assistant"
+                                                  :text "" :toolCalls []))))
+     (should-not ghost--unseen)
+     (ghost--event `((type . "entry")
+                     (entry . ,(ghost-test--entry :id 2 :kind "assistant"
+                                                  :text "Here." :toolCalls []))))
+     (should ghost--unseen)
+     (should (equal (alist-get 'text (car notified)) "Here."))
+     (let ((ghost--watch t))
+       (should (string-match-p "●" (ghost--lighter))))
+     (ghost--seen)
+     (should-not ghost--unseen))))
+
+(ert-deftest ghost-test-shows-the-status-in-the-header-line ()
+  (let ((ghost--status '((busy . t) (queued . 2)
+                         (consolidation (from . "2026-10-20") (running)))))
+    (should (equal (ghost--header-line)
+                   "busy · 2 queued · notes since 2026-10-20 to consolidate"))
+    (should (equal (ghost--prompt nil 'ask) "Ask ghost (busy: it will queue): "))
+    (should (equal (ghost--prompt "/a.md:1-2" 'steer)
+                   "Steer ghost about /a.md:1-2: "))))
+
+(ert-deftest ghost-test-carries-the-region-with-its-volume-path ()
+  (let* ((root (make-temp-file "ghost-root" t))
+         (ghost-root root)
+         (file (expand-file-name "code/x.ts" root)))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory file))
+          (write-region "one\ntwo ```\nthree\nfour\n" nil file)
+          (with-current-buffer (find-file-noselect file)
+            (goto-char (point-min))
+            (forward-line 1)
+            (set-mark (point))
+            (forward-line 2)
+            (activate-mark)
+            (let ((context (ghost--region-context)))
+              (should (equal (car context) "/code/x.ts:2-3"))
+              (should (equal (cdr context)
+                             (concat "From /code/x.ts, lines 2-3:\n\n"
+                                     "````ts\ntwo ```\nthree\n````\n"))))
+            (kill-buffer)))
+      (delete-directory root t))))
+
+(ert-deftest ghost-test-names-a-file-outside-the-volume ()
+  (let ((ghost-root (make-temp-file "ghost-root" t))
+        (file (make-temp-file "ghost-outside" nil ".el" "(one)\n")))
+    (unwind-protect
+        (with-current-buffer (find-file-noselect file)
+          (set-mark (point-min))
+          (goto-char (point-max))
+          (activate-mark)
+          (should (string-match-p
+                   "\\`From .*ghost-outside.*\\.el (on this machine, outside the Volume), line 1:"
+                   (cdr (ghost--region-context))))
+          (kill-buffer))
+      (delete-file file)
+      (delete-directory ghost-root t))))
+
+(defun ghost-test--program (dir)
+  "Write a fake `ghost' into DIR that logs its arguments and cwd."
+  (let ((program (expand-file-name "ghost" dir)))
+    (write-region
+     (concat "#!/bin/sh\n"
+             "printf '%s\\n' \"$(pwd -P)\" \"$@\" > \"$(dirname \"$0\")/args\"\n"
+             "echo '{\"type\":\"snapshot\",\"transcript\":{\"entries\":[]},"
+             "\"status\":{\"busy\":true,\"queued\":0}}'\n"
+             "echo 'ghost: a line on stderr' >&2\n"
+             "echo '{\"type\":\"settled\",\"id\":\"x\",\"status\":\"done\","
+             "\"text\":\"the answer\"}'\n")
+     nil program)
+    (set-file-modes program #o755)
+    program))
+
+(ert-deftest ghost-test-asks-from-the-directory-and-inserts-the-answer ()
+  (let* ((dir (file-name-as-directory (make-temp-file "ghost-bin" t)))
+         (ghost-program (ghost-test--program dir))
+         (ghost-root dir))
+    (unwind-protect
+        (ghost-test--with-transcript
+         (with-temp-buffer
+           (insert "before:")
+           (let ((marker (point-marker)))
+             (ghost--ask "-not an option" dir marker)
+             (should (= ghost--asks 1))
+             (while (> ghost--asks 0) (accept-process-output nil 0.05))
+             (should (equal (buffer-string) "before:the answer"))))
+         (should (equal (with-temp-buffer
+                          (insert-file-contents (expand-file-name "args" dir))
+                          (split-string (buffer-string) "\n" t))
+                        (list (directory-file-name (file-truename dir))
+                              "ask" "--json" "--" "-not an option"))))
+      (delete-directory dir t))))
+
+(ert-deftest ghost-test-ends-the-watch-when-idle-and-hidden ()
+  (let* ((dir (file-name-as-directory (make-temp-file "ghost-bin" t)))
+         (ghost-root dir)
+         (ghost-program (expand-file-name "ghost" dir)))
+    (write-region (concat "#!/bin/sh\n"
+                          "echo '{\"type\":\"snapshot\","
+                          "\"transcript\":{\"entries\":[]},"
+                          "\"status\":{\"busy\":false,\"queued\":0}}'\n"
+                          "exec sleep 30\n")
+                  nil ghost-program)
+    (set-file-modes ghost-program #o755)
+    (unwind-protect
+        (ghost-test--with-transcript
+         (ghost--ensure-watch)
+         (should ghost--idle-timer)
+         (while (not ghost--status) (accept-process-output ghost--watch 0.05))
+         (should (equal (ghost--header-line) "idle"))
+         (let ((watch ghost--watch))
+           (setq ghost--status '((busy . t)))
+           (ghost--idle)
+           (should (process-live-p watch))
+           (should ghost--idle-timer)
+           (setq ghost--status '((busy)))
+           (ghost--idle)
+           (should-not (process-live-p watch))
+           (should-not ghost--watch)
+           (should (equal (ghost--header-line) "not watching")))
+         (when ghost--idle-timer (cancel-timer ghost--idle-timer)))
+      (delete-directory dir t))))
+
+(provide 'ghost-test)
+;;; ghost-test.el ends here
