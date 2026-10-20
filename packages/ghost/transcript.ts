@@ -127,7 +127,12 @@ function toEntry(record: EntryRecord): TranscriptEntry | undefined {
 	switch (record.kind) {
 		case ASK:
 			return message?.role === 'user'
-				? { id, kind: 'user', text: text(message.content) }
+				? {
+						id,
+						kind: 'user',
+						text: text(message.content),
+						askId: (record.data as { id?: string } | undefined)?.id
+					}
 				: undefined
 		case 'pi.assistant': {
 			if (message?.role !== 'assistant') return undefined

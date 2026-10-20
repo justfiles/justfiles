@@ -96,7 +96,7 @@ describe('openGhost', () => {
 		await vi.waitFor(() => {
 			const entries = events.flatMap((event) => (event.type === 'entry' ? [event.entry] : []))
 			expect(entries).toMatchObject([
-				{ kind: 'user', text: 'Capital of France?' },
+				{ kind: 'user', text: 'Capital of France?', askId: 'q1' },
 				{ kind: 'assistant', text: 'Paris', toolCalls: [] }
 			])
 			const busy = events.flatMap((event) => (event.type === 'status' ? [event.status.busy] : []))

@@ -85,7 +85,7 @@ async function open(deps: GhostDeps, env: ReturnType<typeof volumeEnv>): Promise
 					type: 'input',
 					content: input,
 					// The input carries its own cwd, so overlapping asks never see each other's.
-					entry: { kind: ASK, data: cwd === undefined ? {} : { cwd } },
+					entry: { kind: ASK, data: cwd === undefined ? { id } : { id, cwd } },
 					requestId: id,
 					whenBusy: whenBusy === 'steer' ? 'steer' : 'followUp'
 				},
