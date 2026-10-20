@@ -50,10 +50,11 @@ async function run(argv: string[]): Promise<number> {
 				let ours = false
 				try {
 					await exchange(await connectOrStart(dir), request, (reply) => {
-						if (reply.type === 'snapshot') return false
 						if (reply.type === 'error' || (reply.type === 'settled' && reply.status === 'failed'))
 							failed = true
+						// JSON gets every message: a snapshot replaces the state, also mid-answer.
 						if (values.json) json(reply)
+						else if (reply.type === 'snapshot') return false
 						else if (reply.type === 'error') console.error(`ghost: ${reply.message}`)
 						else if (reply.type !== 'settled') {
 							// Inputs queued ahead of this one stream here too; show from this one on.
