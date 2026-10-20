@@ -67,7 +67,7 @@ export function createMirror({ volume, shellId, timeZone, scan }: MirrorDeps) {
 		for await (const record of scan(mark)) {
 			const entry = toEntry(record)
 			if (entry !== undefined) {
-				const at = new Date(record.model?.[0]?.timestamp ?? Date.now())
+				const at = new Date(entry.at ?? Date.now())
 				const said = dayInTz(at, timeZone)
 				if (day === undefined || said > day) day = said
 				const path = paths.transcript(shellId, day)

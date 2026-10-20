@@ -4,6 +4,7 @@ import { hostname } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { type AuthPrompt, createModels, type Models } from '@earendil-works/pi-ai'
+import { registerBunOAuthFlows } from '@earendil-works/pi-ai/bun-oauth'
 import { openaiProvider } from '@earendil-works/pi-ai/providers/openai'
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex'
 import { volume } from '@justfiles/fs'
@@ -13,6 +14,10 @@ import { openNodeSqliteState } from '@justfiles/ghost/state/node-sqlite'
 import { volumeCredentials } from './credentials.ts'
 import { type Login, serve } from './daemon.ts'
 import { filesRoot, shellDir, socketPath } from './paths.ts'
+
+// pi-ai loads its sign-in flows from files beside its own, which the bundle does not have;
+// these imports put them in it.
+registerBunOAuthFlows()
 
 /** Run the daemon until it goes idle. Returns at once when another daemon holds the lock. */
 export async function main(): Promise<void> {

@@ -111,9 +111,15 @@ export interface Transcript {
 	partial?: string
 }
 
-export type TranscriptEntry =
-	/** `askId` is the `id` the input was asked with. */
-	| { id: number; kind: 'user'; text: string; askId?: string }
+/** `at` is when it was said, as an ISO time, when pi kept one. */
+export type TranscriptEntry = (
+	| {
+			id: number
+			kind: 'user'
+			text: string
+			/** The `id` the input was asked with. */
+			askId?: string
+	  }
 	| {
 			id: number
 			kind: 'assistant'
@@ -125,6 +131,7 @@ export type TranscriptEntry =
 	| { id: number; kind: 'tool'; callId: string; name: string; text: string; isError: boolean }
 	| { id: number; kind: 'reset'; handoff?: string }
 	| { id: number; kind: 'compaction'; summary: string }
+) & { at?: string }
 
 export interface GhostStatus {
 	/** An input is being answered. */
