@@ -125,8 +125,15 @@ export function volumeFs(
 				() => vol.rm(path, { recursive: options?.recursive, force: options?.force }),
 				false
 			),
-		cp: (src, dest, options) =>
-			guard(dest, () => guard(src, () => vol.cp(src, dest, { recursive: options?.recursive }))),
+		// A directory is copied entry by entry, so each lands where `guard` looked: a symlink
+		// below `dest` cannot carry the copy into a denied tree.
+		async cp(src, dest, options) {
+			if (!options?.recursive || !(await fs.lstat(src)).isDirectory)
+				return guard(dest, () => guard(src, () => vol.cp(src, dest)))
+			await fs.mkdir(dest, { recursive: true })
+			for (const name of await fs.readdir(src))
+				await fs.cp(join(src, name), join(dest, name), options)
+		},
 		mv: (src, dest) => guard(dest, () => guard(src, () => vol.rename(src, dest), false), false),
 		resolvePath: (base, path) => resolvePath(base, path),
 		// Drives glob expansion — filter, or `ls /system/**` enumerates the secrets.

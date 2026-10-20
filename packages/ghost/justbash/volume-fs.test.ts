@@ -304,4 +304,19 @@ describe('denied prefixes', () => {
 		expect(await vol.exists('/private/accounts/evil.json')).toBe(false)
 		expect(await vol.exists('/private/accounts/new.json')).toBe(false)
 	})
+
+	test('a recursive copy stays out through a symlink below its destination', async () => {
+		const vol = volume(memStore())
+		await vol.mkdir('/private/accounts', { recursive: true })
+		await vol.mkdir('/src/nested', { recursive: true })
+		await vol.writeFile('/src/nested/token', enc('pwn'))
+		await vol.mkdir('/dst/src', { recursive: true })
+		await vol.symlink('../../private/accounts', '/dst/src/nested')
+		const fs = volumeFs(vol, DENY)
+
+		await expect(fs.cp('/src', '/dst/src', { recursive: true })).rejects.toMatchObject({
+			code: 'EACCES'
+		})
+		expect(await vol.exists('/private/accounts/token')).toBe(false)
+	})
 })
