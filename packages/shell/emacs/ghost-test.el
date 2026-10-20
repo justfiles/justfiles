@@ -199,6 +199,15 @@
             (kill-buffer)))
       (delete-directory root t))))
 
+(ert-deftest ghost-test-counts-region-lines-from-the-top-of-a-narrowed-file ()
+  (with-temp-buffer
+    (insert "one\ntwo\nthree\nfour\n")
+    (narrow-to-region (line-beginning-position -1) (point-max))
+    (set-mark (point-min))
+    (goto-char (point-max))
+    (activate-mark)
+    (should (string-match-p ", lines 3-4:" (cdr (ghost--region-context))))))
+
 (ert-deftest ghost-test-names-a-file-outside-the-volume ()
   (let ((ghost-root (make-temp-file "ghost-root" t))
         (file (make-temp-file "ghost-outside" nil ".el" "(one)\n")))

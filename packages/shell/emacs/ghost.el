@@ -197,13 +197,15 @@ HOW is `ask', `steer', or a marker to insert the answer at."
                       (file (format "%s (on this machine, outside the Volume)"
                                     name))
                       (t (format "the buffer %s" name))))
-         (first (line-number-at-pos beg))
+         ;; Lines of the file, also in a narrowed buffer.
+         (first (line-number-at-pos beg t))
          ;; A region that ends at the start of a line ends on the line before.
          (last (line-number-at-pos
                 (if (and (> end beg)
                          (save-excursion (goto-char end) (bolp)))
                     (1- end)
-                  end)))
+                  end)
+                t))
          (lines (if (= first last)
                     (format "line %d" first)
                   (format "lines %d-%d" first last)))
