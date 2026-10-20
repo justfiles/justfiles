@@ -15,7 +15,8 @@
 		"@earendil-works/chord": "1.3.0",
 		"@earendil-works/pi-ai": "1.3.0",
 		"@earendil-works/pi-durable": "1.3.0",
-		"@justfiles/fs": "workspace:*"
+		"@justfiles/fs": "workspace:*",
+		"just-bash": "3.6.0"
 	},
 	"devDependencies": {
 		"@justfiles/tsconfig": "workspace:*",
