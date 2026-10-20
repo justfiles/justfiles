@@ -1,4 +1,4 @@
-import type { StateDatabase } from './types.ts'
+import type { Settled, StateDatabase } from './types.ts'
 
 // The state database holds one generation of pi's tables at a time, each under its own
 // prefix; generation 0 is pi's unprefixed tables, as the first ghosts wrote them. Rotating
@@ -13,35 +13,42 @@ export function prefixOf(generation: number): string | undefined {
 }
 
 /**
- * The generation in use, 0 for a database that has never rotated, and the day the night's
- * consolidation started at when the rotation left the one before.
+ * What a generation hands the next: the day its consolidation was to start the next night at,
+ * and how its latest asks settled, so a retry of one is answered instead of asked again.
  */
+export interface Carried {
+	from?: string
+	asked?: Record<string, Settled>
+}
+
+/** The generation in use, 0 for a database that has never rotated, and what it was handed. */
 export async function currentGeneration(
 	db: StateDatabase
-): Promise<{ generation: number; from?: string }> {
+): Promise<{ generation: number; carried: Carried }> {
 	await db.exec(
-		`CREATE TABLE IF NOT EXISTS ${META} (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), generation INTEGER NOT NULL, consolidate_from TEXT)`
+		`CREATE TABLE IF NOT EXISTS ${META} (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), generation INTEGER NOT NULL, carried TEXT NOT NULL)`
 	)
-	const row = await db.get<{ generation: number; consolidate_from: string | null }>(
-		`SELECT generation, consolidate_from FROM ${META}`
+	const row = await db.get<{ generation: number; carried: string }>(
+		`SELECT generation, carried FROM ${META}`
 	)
-	const generation = Number(row?.generation ?? 0)
-	return row?.consolidate_from == null ? { generation } : { generation, from: row.consolidate_from }
+	return row === undefined
+		? { generation: 0, carried: {} }
+		: { generation: Number(row.generation), carried: JSON.parse(row.carried) }
 }
 
 /**
- * Make `generation` the one in use, keeping `from` for its consolidation, then drop every
- * other table and give their space back.
+ * Make `generation` the one in use, handed `carried`, then drop every other table and give
+ * their space back.
  */
 export async function useGeneration(
 	db: StateDatabase,
 	generation: number,
-	from: string | undefined
+	carried: Carried
 ): Promise<void> {
 	await db.run(
-		`INSERT INTO ${META} (singleton, generation, consolidate_from) VALUES (1, ?, ?) ON CONFLICT (singleton) DO UPDATE SET generation = excluded.generation, consolidate_from = excluded.consolidate_from`,
+		`INSERT INTO ${META} (singleton, generation, carried) VALUES (1, ?, ?) ON CONFLICT (singleton) DO UPDATE SET generation = excluded.generation, carried = excluded.carried`,
 		generation,
-		from ?? null
+		JSON.stringify(carried)
 	)
 	await dropOtherGenerations(db, generation)
 }

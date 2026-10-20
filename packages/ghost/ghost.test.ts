@@ -1177,9 +1177,9 @@ describe('nightly consolidation', () => {
 		await put(world, '/system/memory/daily/2026-10-17.test.md', '- Older.')
 		const state = await openNodeSqliteState(':memory:')
 		await state.exec(
-			'CREATE TABLE ghost_state (singleton INTEGER PRIMARY KEY, generation INTEGER NOT NULL, consolidate_from TEXT)'
+			'CREATE TABLE ghost_state (singleton INTEGER PRIMARY KEY, generation INTEGER NOT NULL, carried TEXT NOT NULL)'
 		)
-		await state.run("INSERT INTO ghost_state VALUES (1, 1, '2026-10-17')")
+		await state.run(`INSERT INTO ghost_state VALUES (1, 1, '{"from":"2026-10-17"}')`)
 		const requests = consolidations('- From the 17th.')
 		const ghost = await openBounded(state, world, Number.POSITIVE_INFINITY)
 
@@ -1242,6 +1242,27 @@ describe('state rotation', () => {
 		])
 	})
 
+	it('answers a retry of an ask from before the rotation without asking again', async () => {
+		const path = join(dir, 'state.sqlite')
+		faux.setResponses([fauxAssistantMessage('Paris')])
+		const first = await openOn(path)
+		await first.ask('Capital of France?', { id: 'q1' })
+		await first.close()
+
+		faux.setResponses([fauxAssistantMessage('- Asked about France.')])
+		const second = await openBounded(await openNodeSqliteState(path), volume(memStore()), 0)
+		await vi.waitFor(() => expect(snapshotOf(second).transcript.entries).toEqual([]))
+		const retried = await second.ask('Capital of France?', { id: 'q1' })
+		await second.close()
+
+		expect(retried).toEqual({ id: 'q1', status: 'done', text: 'Paris' })
+		expect(faux.state.callCount).toBe(2)
+		// Also once the process that rotated is gone.
+		const third = await openOn(path)
+		expect(await third.ask('Capital of France?', { id: 'q1' })).toEqual(retried)
+		expect(snapshotOf(third).transcript.entries).toEqual([])
+	})
+
 	it('keeps the old generation when its note fails, and rotates once one is taken', async () => {
 		const path = join(dir, 'state.sqlite')
 		const world = volume(memStore())
@@ -1295,7 +1316,7 @@ describe('state rotation', () => {
 		await first.ask('first', { id: '1' })
 		await first.close()
 		const state = await openNodeSqliteState(path)
-		await state.run('INSERT INTO ghost_state (singleton, generation) VALUES (1, 1)')
+		await state.run("INSERT INTO ghost_state (singleton, generation, carried) VALUES (1, 1, '{}')")
 
 		const second = await openBounded(state, volume(memStore()), Number.POSITIVE_INFINITY)
 

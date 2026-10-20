@@ -10,6 +10,7 @@ import {
 	type EntryId,
 	Harness,
 	hook,
+	type SubmissionRecord,
 	type ToolRegistration,
 	type Tx,
 	watchEvents
@@ -28,6 +29,7 @@ import { classifyFailure } from './failure.ts'
 import { createMirror, writeShellRecord } from './mirror.ts'
 import { createNotes } from './notes.ts'
 import {
+	type Carried,
 	currentGeneration,
 	dropOtherGenerations,
 	liveBytes,
@@ -42,6 +44,7 @@ import type {
 	Ghost,
 	GhostDeps,
 	GhostSettings,
+	Settled,
 	StateDatabase,
 	Tool,
 	TranscriptEvent
@@ -75,8 +78,8 @@ export function openGhost(deps: GhostDeps): Promise<Ghost> {
 export async function openRotating(deps: GhostDeps, maxBytes: number): Promise<Ghost> {
 	const db = deps.state
 	let generation = 0
-	// The day a consolidation task the generation creates starts at, kept through a rotation.
-	let from: string | undefined
+	// What the last rotation carried over: the next night's start day, and recent asks.
+	let carried: Carried = {}
 	let current!: Generation
 	let opened = false
 	const listeners = new Set<(event: TranscriptEvent) => void>()
@@ -93,13 +96,13 @@ export async function openRotating(deps: GhostDeps, maxBytes: number): Promise<G
 		openOn(deps, {
 			state: unclosable(db),
 			prefix: prefixOf(generation),
-			from,
+			from: carried.from,
 			afterNight: check
 		})
 	try {
 		const stored = await currentGeneration(db)
 		generation = stored.generation
-		from = stored.from
+		carried = stored.carried
 		// What a rotation the process died in left of the old generation.
 		await dropOtherGenerations(db, generation)
 		current = await openGeneration()
@@ -136,15 +139,15 @@ export async function openRotating(deps: GhostDeps, maxBytes: number): Promise<G
 		await Promise.allSettled(calls)
 		if (closed) return
 		// A note that fails keeps this generation, so its context is there for the next try.
-		const start = await current.retire()
+		const next = await current.retire()
 		if (closed) return
 		switching = true
 		unwatch()
 		try {
 			await current.close()
 			generation += 1
-			from = start
-			await useGeneration(db, generation, from)
+			carried = next
+			await useGeneration(db, generation, carried)
 			current = await openGeneration()
 			unwatch = current.watch(forward)
 		} catch (error) {
@@ -168,10 +171,14 @@ export async function openRotating(deps: GhostDeps, maxBytes: number): Promise<G
 
 	return {
 		// Checked after every ask too, so a shell that never consolidates stays bounded.
-		ask: (text, opts) =>
-			call((ghost) => ghost.ask(text, opts)).finally(() => {
+		async ask(text, opts) {
+			// Asked before the last rotation: its answer is gone from the state with the generation.
+			const settled = carried.asked?.[opts.id]
+			if (settled !== undefined) return settled
+			return call((ghost) => ghost.ask(text, opts)).finally(() => {
 				check()
-			}),
+			})
+		},
 		// Not held back by a rotation, which waits for the very calls an abort ends.
 		abort: () => current.abort(),
 		newSession: (handoff) => call((ghost) => ghost.newSession(handoff)),
@@ -208,10 +215,10 @@ function unclosable(db: StateDatabase): StateDatabase {
 interface Generation extends Ghost {
 	/**
 	 * Take the notes this generation still owes the daily file: a reset's note left untaken,
-	 * and the active context's. Waits for idle; rejects when a note fails. Returns the day its
-	 * consolidation would start the next night at.
+	 * and the active context's. Waits for idle; rejects when a note fails. Returns what the
+	 * next generation needs of it.
 	 */
-	retire(): Promise<string | undefined>
+	retire(): Promise<Carried>
 }
 
 interface GenerationOptions {
@@ -422,17 +429,7 @@ async function open(
 				context
 			)
 			const record = await submission.wait(context)
-			if (record.status === 'unanswered')
-				return { id, status: 'failed', failure: classifyFailure(record.reason, record.detail) }
-			const answer = record.type === 'input' ? record.answer : undefined
-			const entry =
-				answer === undefined ? undefined : await root.commit((tx) => tx.entry(answer), context)
-			const message = entry?.model?.[0]
-			return {
-				id,
-				status: 'done',
-				text: message?.role === 'assistant' ? text(message.content) : ''
-			}
+			return root.commit((tx) => settledOf(tx, id, record), context)
 		},
 		abort: () => root.abort(context),
 		async newSession(handoff) {
@@ -454,7 +451,9 @@ async function open(
 			await root.waitForIdle(context)
 			const { messages } = await root.context(context)
 			await notes.append(await notes.take(messages, alive.context.abortSignal))
-			return consolidationFrom(root, context)
+			const from = await consolidationFrom(root, context)
+			const asked = await root.commit((tx) => latestAsks(tx, root.id), context)
+			return from === undefined ? { asked } : { from, asked }
 		},
 		async close() {
 			alive.cancel()
@@ -470,6 +469,44 @@ async function open(
 			await env.close()
 		}
 	}
+}
+
+/** How many of a generation's latest asks a rotation carries over. */
+const ASKS_CARRIED = 50
+
+/** How the newest asks on `conversationId` settled, by id; those still waiting left out. */
+async function latestAsks(
+	tx: Tx,
+	conversationId: ConversationId
+): Promise<Record<string, Settled>> {
+	const asked: Record<string, Settled> = {}
+	let seen = 0
+	let cursor: Cursor | undefined
+	do {
+		const page = await tx.scanEntries({ conversationId }, 50, cursor)
+		for (const entry of page.items) {
+			const id = entry.kind === ASK ? (entry.data as { id?: string }).id : undefined
+			if (id === undefined || seen++ >= ASKS_CARRIED) continue
+			const record = await tx.submissionByRequest(conversationId, id)
+			if (record?.status === 'done' || record?.status === 'unanswered')
+				asked[id] = await settledOf(tx, id, record)
+		}
+		cursor = seen < ASKS_CARRIED ? page.next : undefined
+	} while (cursor !== undefined)
+	return asked
+}
+
+/** What an ask that `record` settled resolves with. */
+async function settledOf(
+	tx: Tx,
+	id: string,
+	record: SubmissionRecord & { status: 'done' | 'unanswered' }
+): Promise<Settled> {
+	if (record.status === 'unanswered')
+		return { id, status: 'failed', failure: classifyFailure(record.reason, record.detail) }
+	const entry = record.type === 'input' ? await tx.entry(record.answer) : undefined
+	const message = entry?.model?.[0]
+	return { id, status: 'done', text: message?.role === 'assistant' ? text(message.content) : '' }
 }
 
 function compactionPolicy(setting: GhostSettings['compaction']) {
