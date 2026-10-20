@@ -2,6 +2,7 @@ import type { Context } from '@earendil-works/chord/context'
 import type { Models } from '@earendil-works/pi-ai'
 import {
 	type Conversation,
+	type Cursor,
 	defineTask,
 	type Harness,
 	type TaskRuntime
@@ -25,7 +26,7 @@ const TEMP = `${paths.MEMORY}.tmp`
 
 /**
  * `until` is the next wake. `from` is the first day whose notes are not in core.md yet;
- * without it, yesterday. A `write` holds the rewrite of core.md and the hash it replaces.
+ * without it, the day before the first wake. A `write` holds the rewrite of core.md and the hash it replaces.
  */
 type Checkpoint =
 	| { phase: 'sleep'; until: number; from?: string }
@@ -85,10 +86,10 @@ export function consolidationTask(deps: ConsolidationDeps) {
 			async consolidate(task, runtime, context) {
 				const { until, from } = task.state.checkpoint
 				deps.onWake(until)
-				// The days before today, from `from` on: a wake missed while the machine was off
-				// takes them all once it is back.
+				// The days before today, from `from` on, or from the day before the wake this was
+				// armed for: a wake missed while the machine was off takes them all once it is back.
 				const today = dayInTz(new Date(runtime.now()), timeZone)
-				const start = from ?? dayBefore(today)
+				const start = from ?? dayBefore(dayInTz(new Date(until), timeZone))
 				const days = daysFrom(start, today).slice(-MAX_DAYS)
 				let rewrite: { base: string; next: string } | undefined
 				try {
@@ -191,10 +192,21 @@ export async function consolidationFrom(
 		: undefined
 }
 
+/** Every consolidation task on `conversation` not ended or being aborted, oldest first. */
 function liveTasks(conversation: Conversation, context: Context) {
 	return conversation.commit(async (tx) => {
-		const page = await tx.scanTasks({ conversationId: conversation.id, kind: KIND }, 50)
-		return page.items.filter((record) => record.state.status !== 'terminal')
+		const live = []
+		let cursor: Cursor | undefined
+		do {
+			const page = await tx.scanTasks({ conversationId: conversation.id, kind: KIND }, 50, cursor)
+			live.push(
+				...page.items.filter(
+					(record) => record.state.status !== 'terminal' && !record.abortRequested
+				)
+			)
+			cursor = page.next
+		} while (cursor !== undefined)
+		return live
 	}, context)
 }
 

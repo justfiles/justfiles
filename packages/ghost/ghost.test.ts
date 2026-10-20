@@ -1014,6 +1014,41 @@ describe('nightly consolidation', () => {
 		expect(dec(await world.readFile(CORE))).toBe('## 2026-10-19\n\n- From A.\n')
 	})
 
+	it('takes every day since a first wake missed while closed for days', async () => {
+		const path = join(dir, 'state.sqlite')
+		const world = volume(memStore())
+		for (const day of ['2026-10-19', '2026-10-20', '2026-10-21'])
+			await put(world, `/system/memory/daily/${day}.test.md`, `- On ${day}.`)
+		const requests = consolidations('- Three days.')
+		await (await openOn(path, undefined, world)).close()
+
+		vi.setSystemTime(new Date('2026-10-22T09:00:00Z'))
+		const ghost = await openOn(path, undefined, world)
+
+		await vi.waitFor(() => expect(wakeOf(ghost)).toBe(at('2026-10-23T04:00:00Z')))
+		expect(dec(await world.readFile(CORE))).toBe('## 2026-10-19 to 2026-10-21\n\n- Three days.\n')
+		for (const day of ['2026-10-19', '2026-10-20', '2026-10-21'])
+			expect(requests[0]).toContain(`- On ${day}.`)
+	})
+
+	it('keeps one night armed however often consolidation was turned off and on', async () => {
+		const path = join(dir, 'state.sqlite')
+		const world = volume(memStore())
+		await put(world, '/system/memory/daily/2026-10-19.test.md', '- A.')
+		const requests = consolidations('- From A.', '- Again.')
+		for (let i = 0; i < 51; i++) {
+			await (await openOn(path, undefined, world)).close()
+			await (await openOn(path, undefined, world, { consolidate: false })).close()
+		}
+		await (await openOn(path, undefined, world)).close()
+		const ghost = await openOn(path, undefined, world)
+
+		await vi.advanceTimersByTimeAsync(60 * 60_000)
+
+		await vi.waitFor(() => expect(wakeOf(ghost)).toBe(at('2026-10-21T04:00:00Z')))
+		expect(requests).toHaveLength(1)
+	})
+
 	it('neither wakes nor writes with consolidation off, and stops a night armed before', async () => {
 		const path = join(dir, 'state.sqlite')
 		const world = volume(memStore())
