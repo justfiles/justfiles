@@ -94,6 +94,31 @@
      (should-not (string-match-p "Hello\\(\n\\|\\'\\)" text)))
    (should-not ghost--partial)))
 
+(ert-deftest ghost-test-forgets-the-transcript-when-its-buffer-is-killed ()
+  (ghost-test--with-transcript
+   (ghost--event
+    (ghost-test--snapshot
+     (ghost-test--entry :id 1 :kind "assistant" :text ""
+                        :toolCalls [((id . "c1") (name . "read") (args))])))
+   (ghost--event '((type . "text") (delta . "Hal")))
+   (let ((proc (make-pipe-process :name "ghost-test" :noquery t)))
+     (setq ghost--watch proc)
+     (kill-buffer "*ghost*")
+     (should-not (process-live-p proc)))
+   (should-not ghost--watch)
+   (should-not ghost--partial)
+   (should (zerop (hash-table-count ghost--calls)))
+   ;; What comes after draws into a new buffer.
+   (ghost--event
+    `((type . "entry")
+      (entry . ,(ghost-test--entry :id 2 :kind "tool" :callId "c1"
+                                   :name "read" :text "x" :isError nil))))
+   (ghost--event `((type . "entry")
+                   (entry . ,(ghost-test--entry :id 3 :kind "assistant"
+                                                :text "Hallo." :toolCalls []))))
+   (should (string-match-p "▸ read {}\n.*ghost › Hallo\\.\n\\'"
+                           (ghost-test--text)))))
+
 (ert-deftest ghost-test-marks-entries-that-answer-no-ask ()
   (ghost-test--with-transcript
    (ghost--event

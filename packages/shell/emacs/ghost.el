@@ -493,7 +493,16 @@ rest from the watch, which may have ended while the ask was written."
   "The ghost's conversation, drawn from `ghost watch'.
 \\{ghost-transcript-mode-map}"
   (setq-local header-line-format '(:eval (ghost--header-line)))
+  (add-hook 'kill-buffer-hook #'ghost--killed nil t)
   (visual-line-mode 1))
+
+(defun ghost--killed ()
+  "Forget what `*ghost*' showed, and end the watch that drew it.
+The next watch starts with a snapshot, which draws a new `*ghost*'."
+  (ghost--stop-watch)
+  (when ghost--partial (set-marker ghost--partial nil))
+  (setq ghost--partial nil ghost--answering nil ghost--last-answer nil)
+  (clrhash ghost--calls))
 
 ;;;###autoload
 (defun ghost-transcript ()
