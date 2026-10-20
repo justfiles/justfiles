@@ -60,7 +60,7 @@ async function run(argv: string[]): Promise<number> {
 							if (
 								reply.type === 'entry' &&
 								reply.entry.kind === 'user' &&
-								reply.entry.text === text
+								reply.entry.askId === request.id
 							)
 								ours = true
 							else if (ours) printed = show(reply) !== '' || printed

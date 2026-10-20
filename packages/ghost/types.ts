@@ -97,7 +97,8 @@ export interface Transcript {
 }
 
 export type TranscriptEntry =
-	| { id: number; kind: 'user'; text: string }
+	/** `askId` is the `id` the input was asked with. */
+	| { id: number; kind: 'user'; text: string; askId?: string }
 	| {
 			id: number
 			kind: 'assistant'
