@@ -74,22 +74,29 @@ export function createMirror({ volume, shellId, timeZone, scan }: MirrorDeps) {
 					path,
 					encode(`${separator}${JSON.stringify(mirrored(entry, at))}\n`)
 				)
-				torn = undefined
+				if (separator !== '') torn = undefined
 			}
 			mark = record.id
 		}
 	}
 
-	/** The id of the newest mirrored entry, and the newest file when it ends mid-line. */
+	/**
+	 * The id of the newest mirrored entry, from the newest file that holds one, and the newest
+	 * file when it ends mid-line.
+	 */
 	async function newest() {
 		const days = (await names(volume, dir)).filter((name) => name.endsWith('.jsonl'))
 		const last = days.at(-1)
-		const text = last === undefined ? undefined : await readText(volume, `${dir}/${last}`)
-		const lines = text === undefined ? [] : parseLines(text)
-		return {
-			mark: lines.at(-1)?.id,
-			torn: text === undefined || text === '' || text.endsWith('\n') ? undefined : `${dir}/${last}`
+		let mark: number | undefined
+		let torn: string | undefined
+		for (const day of [...days].reverse()) {
+			const path = `${dir}/${day}`
+			const text = (await readText(volume, path)) ?? ''
+			if (day === last && text !== '' && !text.endsWith('\n')) torn = path
+			mark = parseLines(text).at(-1)?.id
+			if (mark !== undefined) break
 		}
+		return { mark, torn }
 	}
 }
 

@@ -152,7 +152,7 @@ describe('openGhost', () => {
 			if (event.type !== 'snapshot') throw new Error('bad watcher')
 		})
 		const events = record(ghost)
-		faux.setResponses([fauxAssistantMessage('one'), fauxAssistantMessage('two')])
+		faux.setResponses([fauxAssistantMessage('one'), () => fauxAssistantMessage('two')])
 
 		await ghost.ask('first', { id: '1' })
 		await ghost.ask('second', { id: '2' })
@@ -759,6 +759,32 @@ describe('transcript mirror, shell record and transcript tool', () => {
 		expect(parseLines(text)).toMatchObject([
 			{ kind: 'user', text: 'Still there?' },
 			{ kind: 'assistant', text: 'fine' }
+		])
+	})
+
+	it('carries on from an older day when the newest file holds only a half line', async () => {
+		const world = volume(memStore())
+		faux.setResponses([fauxAssistantMessage('one'), () => fauxAssistantMessage('two')])
+		const path = join(dir, 'state.sqlite')
+		const first = await openOn(path, undefined, world)
+		await first.ask('First.', { id: '1' })
+		await first.close()
+		await put(world, '/system/agents/main/transcripts/test/2026-10-20.jsonl', '{"at":"2026-10-20')
+
+		vi.setSystemTime(new Date('2026-10-20T12:00:00Z'))
+		const second = await openOn(path, undefined, world)
+		await second.ask('Second.', { id: '2' })
+		await second.close()
+
+		expect(await mirrorOf(world)).toMatchObject([
+			{ kind: 'user', text: 'First.' },
+			{ kind: 'assistant', text: 'one' }
+		])
+		const text = dec(await world.readFile('/system/agents/main/transcripts/test/2026-10-20.jsonl'))
+		expect(text.split('\n')[0]).toBe('{"at":"2026-10-20')
+		expect(parseLines(text)).toMatchObject([
+			{ kind: 'user', text: 'Second.' },
+			{ kind: 'assistant', text: 'two' }
 		])
 	})
 
