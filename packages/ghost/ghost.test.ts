@@ -1029,6 +1029,89 @@ describe('nightly consolidation', () => {
 		expect(await world.exists(CORE)).toBe(false)
 	})
 
+	it('re-arms a night whose write failed, and takes its days the next', async () => {
+		const world = volume(memStore())
+		await put(world, '/system/memory/daily/2026-10-19.test.md', '- A.')
+		let failures = 1
+		const flaky = new Proxy(world, {
+			get(target, key) {
+				if (key !== 'writeFile') return Reflect.get(target, key)
+				return async (...args: Parameters<Volume['writeFile']>) => {
+					if (args[0] === `${CORE}.tmp` && failures-- > 0) throw new Error('EIO: disk')
+					return target.writeFile(...args)
+				}
+			}
+		})
+		const requests = consolidations('- From A.', '- From A and B.')
+		const ghost = await openOn(':memory:', undefined, flaky)
+
+		await vi.advanceTimersByTimeAsync(60 * 60_000)
+		await vi.waitFor(() => expect(wakeOf(ghost)).toBe(at('2026-10-21T04:00:00Z')))
+		expect(await world.exists(CORE)).toBe(false)
+
+		await put(world, '/system/memory/daily/2026-10-20.test.md', '- B.')
+		await vi.advanceTimersByTimeAsync(24 * 60 * 60_000)
+		await vi.waitFor(() => expect(wakeOf(ghost)).toBe(at('2026-10-22T04:00:00Z')))
+		expect(dec(await world.readFile(CORE))).toBe('## 2026-10-19 to 2026-10-20\n\n- From A and B.\n')
+		expect(requests[1]).toContain('- A.')
+	})
+
+	it('keeps the days a night left for the next one through a reopen and a rotation', async () => {
+		const path = join(dir, 'state.sqlite')
+		const world = volume(memStore())
+		await put(world, CORE, '- Likes tea.\n')
+		await put(world, '/system/memory/daily/2026-10-19.test.md', '- A.')
+		const requests: string[] = []
+		let changeCore = true
+		// Notes and answers get 'ok'; the first consolidation finds core.md changed under it.
+		faux.setResponses(
+			Array.from({ length: 20 }, () => async (context: { messages: readonly object[] }) => {
+				const [system] = context.messages as { role: string; content?: unknown }[]
+				if (system?.role !== 'system' || !String(system.content).includes('durable memory'))
+					return fauxAssistantMessage('ok')
+				requests.push(String((context.messages.at(-1) as { content: unknown }).content))
+				if (changeCore) await world.appendFile(CORE, enc('- Added meanwhile.\n'))
+				changeCore = false
+				return fauxAssistantMessage('- From A.')
+			})
+		)
+		const first = await openOn(path, undefined, world)
+		await vi.advanceTimersByTimeAsync(60 * 60_000)
+		await vi.waitFor(() => expect(wakeOf(first)).toBe(at('2026-10-21T04:00:00Z')))
+		await first.close()
+
+		const state = await openNodeSqliteState(path)
+		const ghost = await openBounded(state, world, 1024 * 1024)
+		await state.exec('CREATE TABLE ballast (bytes BLOB)')
+		await state.run('INSERT INTO ballast VALUES (zeroblob(2097152))')
+		await ghost.ask('first', { id: '1' })
+		await vi.waitFor(async () => expect(await tables(state)).not.toContain('ballast'))
+		await vi.advanceTimersByTimeAsync(24 * 60 * 60_000)
+
+		await vi.waitFor(() => expect(wakeOf(ghost)).toBe(at('2026-10-22T04:00:00Z')))
+		expect(requests[1]).toContain('# Daily notes, 2026-10-19, shell test')
+		expect(dec(await world.readFile(CORE))).toBe(
+			'- Likes tea.\n- Added meanwhile.\n\n## 2026-10-19 to 2026-10-20\n\n- From A.\n'
+		)
+	})
+
+	it('starts the new generation at the day a rotation the process died in kept', async () => {
+		const world = volume(memStore())
+		await put(world, '/system/memory/daily/2026-10-17.test.md', '- Older.')
+		const state = await openNodeSqliteState(':memory:')
+		await state.exec(
+			'CREATE TABLE ghost_state (singleton INTEGER PRIMARY KEY, generation INTEGER NOT NULL, consolidate_from TEXT)'
+		)
+		await state.run("INSERT INTO ghost_state VALUES (1, 1, '2026-10-17')")
+		const requests = consolidations('- From the 17th.')
+		const ghost = await openBounded(state, world, Number.POSITIVE_INFINITY)
+
+		await vi.advanceTimersByTimeAsync(60 * 60_000)
+
+		await vi.waitFor(() => expect(wakeOf(ghost)).toBe(at('2026-10-21T04:00:00Z')))
+		expect(requests[0]).toContain('- Older.')
+	})
+
 	it("rotates state that outgrew its bound after the night's work", async () => {
 		const world = volume(memStore())
 		const state = await openNodeSqliteState(':memory:')

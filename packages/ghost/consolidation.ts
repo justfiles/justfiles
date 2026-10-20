@@ -40,8 +40,8 @@ interface ConsolidationDeps {
 	timeZone: string
 	/** The next wake, each time a phase starts; it is in the past while a consolidation runs. */
 	onWake(at: number): void
-	/** A night's work is done and the next one armed; `from` is the day the next one starts at. */
-	afterNight(from: string): void
+	/** A night's work is done and the next one armed. */
+	afterNight(): void
 }
 
 /**
@@ -64,7 +64,7 @@ export function consolidationTask(deps: ConsolidationDeps) {
 			() => ({ status: 'running', checkpoint: { phase: 'sleep', until, from } }),
 			context
 		)
-		deps.afterNight(from)
+		deps.afterNight()
 	}
 
 	return defineTask<Input, Checkpoint, null>({
@@ -90,23 +90,17 @@ export function consolidationTask(deps: ConsolidationDeps) {
 				const today = dayInTz(new Date(runtime.now()), timeZone)
 				const start = from ?? dayBefore(today)
 				const days = daysFrom(start, today).slice(-MAX_DAYS)
-				const notes = await dailyNotes(volume, days)
-				if (notes.length === 0) return rearm(runtime, context, today)
-				const core = (await readText(volume, paths.MEMORY)) ?? ''
-				let additions: string
+				let rewrite: { base: string; next: string } | undefined
 				try {
-					additions = await consolidate(deps, core, notes, runtime.signal)
+					rewrite = await rewriteOf(deps, days, runtime.signal)
 				} catch (error) {
 					// Closing is not a failed night: the next process runs this phase again.
 					if (runtime.signal.aborted) throw error
 					runtime.report(error)
 					return rearm(runtime, context, start)
 				}
-				if (additions === '') return rearm(runtime, context, today)
-				const label = days.length === 1 ? days[0] : `${days[0]} to ${days.at(-1)}`
-				const separator = core === '' ? '' : core.endsWith('\n') ? '\n' : '\n\n'
-				const next = `${core}${separator}## ${label}\n\n${additions}\n`
-				const base = await sha256(core)
+				if (rewrite === undefined) return rearm(runtime, context, today)
+				const { base, next } = rewrite
 				await runtime.commit(
 					() => ({
 						status: 'running',
@@ -119,7 +113,13 @@ export function consolidationTask(deps: ConsolidationDeps) {
 			async write(task, runtime, context) {
 				const { from, today, base, next } = task.state.checkpoint
 				deps.onWake(task.state.checkpoint.until)
-				const written = await replaceIfUnchanged(volume, base, next)
+				let written = false
+				try {
+					written = await replaceIfUnchanged(volume, base, next)
+				} catch (error) {
+					if (runtime.signal.aborted) throw error
+					runtime.report(error)
+				}
 				await rearm(runtime, context, written ? today : from)
 			}
 		},
@@ -140,10 +140,7 @@ export async function armConsolidation(
 	opts: { on: boolean; timeZone: string; from?: string },
 	context: Context
 ): Promise<number | undefined> {
-	const live = await conversation.commit(async (tx) => {
-		const page = await tx.scanTasks({ conversationId: conversation.id, kind: KIND }, 50)
-		return page.items.filter((record) => record.state.status !== 'terminal')
-	}, context)
+	const live = await liveTasks(conversation, context)
 	if (!opts.on) {
 		for (const record of live) await harness.abortTask(record.id, context)
 		return undefined
@@ -161,6 +158,44 @@ export async function armConsolidation(
 		context
 	)
 	return until
+}
+
+/**
+ * core.md with what the model finds durable in the notes of `days` appended, and the hash of
+ * the core.md it extends; undefined when there is nothing to add.
+ */
+async function rewriteOf(
+	deps: ConsolidationDeps,
+	days: string[],
+	signal: AbortSignal
+): Promise<{ base: string; next: string } | undefined> {
+	const notes = await dailyNotes(deps.volume, days)
+	if (notes.length === 0) return undefined
+	const core = (await readText(deps.volume, paths.MEMORY)) ?? ''
+	const additions = await consolidate(deps, core, notes, signal)
+	if (additions === '') return undefined
+	const label = days.length === 1 ? days[0] : `${days[0]} to ${days.at(-1)}`
+	const separator = core === '' ? '' : core.endsWith('\n') ? '\n' : '\n\n'
+	return { base: await sha256(core), next: `${core}${separator}## ${label}\n\n${additions}\n` }
+}
+
+/** The day the live consolidation task on `conversation` starts its next night at, if any. */
+export async function consolidationFrom(
+	conversation: Conversation,
+	context: Context
+): Promise<string | undefined> {
+	const live = await liveTasks(conversation, context)
+	const state = live[0]?.state
+	return state?.status === 'pending' || state?.status === 'running'
+		? (state.checkpoint as Checkpoint).from
+		: undefined
+}
+
+function liveTasks(conversation: Conversation, context: Context) {
+	return conversation.commit(async (tx) => {
+		const page = await tx.scanTasks({ conversationId: conversation.id, kind: KIND }, 50)
+		return page.items.filter((record) => record.state.status !== 'terminal')
+	}, context)
 }
 
 /** The consolidation prompt over core.md and the notes: the bullets to append, '' when none. */

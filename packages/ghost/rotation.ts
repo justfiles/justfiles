@@ -12,20 +12,36 @@ export function prefixOf(generation: number): string | undefined {
 	return generation === 0 ? undefined : `g${generation}_`
 }
 
-/** The generation in use, 0 for a database that has never rotated. */
-export async function currentGeneration(db: StateDatabase): Promise<number> {
+/**
+ * The generation in use, 0 for a database that has never rotated, and the day the night's
+ * consolidation started at when the rotation left the one before.
+ */
+export async function currentGeneration(
+	db: StateDatabase
+): Promise<{ generation: number; from?: string }> {
 	await db.exec(
-		`CREATE TABLE IF NOT EXISTS ${META} (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), generation INTEGER NOT NULL)`
+		`CREATE TABLE IF NOT EXISTS ${META} (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), generation INTEGER NOT NULL, consolidate_from TEXT)`
 	)
-	const row = await db.get<{ generation: number }>(`SELECT generation FROM ${META}`)
-	return Number(row?.generation ?? 0)
+	const row = await db.get<{ generation: number; consolidate_from: string | null }>(
+		`SELECT generation, consolidate_from FROM ${META}`
+	)
+	const generation = Number(row?.generation ?? 0)
+	return row?.consolidate_from == null ? { generation } : { generation, from: row.consolidate_from }
 }
 
-/** Make `generation` the one in use, then drop every other table and give their space back. */
-export async function useGeneration(db: StateDatabase, generation: number): Promise<void> {
+/**
+ * Make `generation` the one in use, keeping `from` for its consolidation, then drop every
+ * other table and give their space back.
+ */
+export async function useGeneration(
+	db: StateDatabase,
+	generation: number,
+	from: string | undefined
+): Promise<void> {
 	await db.run(
-		`INSERT INTO ${META} (singleton, generation) VALUES (1, ?) ON CONFLICT (singleton) DO UPDATE SET generation = excluded.generation`,
-		generation
+		`INSERT INTO ${META} (singleton, generation, consolidate_from) VALUES (1, ?, ?) ON CONFLICT (singleton) DO UPDATE SET generation = excluded.generation, consolidate_from = excluded.consolidate_from`,
+		generation,
+		from ?? null
 	)
 	await dropOtherGenerations(db, generation)
 }

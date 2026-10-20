@@ -22,7 +22,7 @@ import {
 	createReadTool,
 	createWriteTool
 } from '@earendil-works/pi-durable/tools'
-import { armConsolidation, consolidationTask } from './consolidation.ts'
+import { armConsolidation, consolidationFrom, consolidationTask } from './consolidation.ts'
 import { volumeEnv } from './env.ts'
 import { classifyFailure } from './failure.ts'
 import { createMirror, writeShellRecord } from './mirror.ts'
@@ -74,9 +74,9 @@ export function openGhost(deps: GhostDeps): Promise<Ghost> {
  */
 export async function openRotating(deps: GhostDeps, maxBytes: number): Promise<Ghost> {
 	const db = deps.state
-	// The day the next consolidation starts at, carried into a new generation's task.
-	let from: string | undefined
 	let generation = 0
+	// The day a consolidation task the generation creates starts at, kept through a rotation.
+	let from: string | undefined
 	let current!: Generation
 	let opened = false
 	const listeners = new Set<(event: TranscriptEvent) => void>()
@@ -94,13 +94,12 @@ export async function openRotating(deps: GhostDeps, maxBytes: number): Promise<G
 			state: unclosable(db),
 			prefix: prefixOf(generation),
 			from,
-			afterNight(next) {
-				from = next
-				check()
-			}
+			afterNight: check
 		})
 	try {
-		generation = await currentGeneration(db)
+		const stored = await currentGeneration(db)
+		generation = stored.generation
+		from = stored.from
 		// What a rotation the process died in left of the old generation.
 		await dropOtherGenerations(db, generation)
 		current = await openGeneration()
@@ -137,14 +136,15 @@ export async function openRotating(deps: GhostDeps, maxBytes: number): Promise<G
 		await Promise.allSettled(calls)
 		if (closed) return
 		// A note that fails keeps this generation, so its context is there for the next try.
-		await current.retire()
+		const start = await current.retire()
 		if (closed) return
 		switching = true
 		unwatch()
 		try {
 			await current.close()
 			generation += 1
-			await useGeneration(db, generation)
+			from = start
+			await useGeneration(db, generation, from)
 			current = await openGeneration()
 			unwatch = current.watch(forward)
 		} catch (error) {
@@ -208,9 +208,10 @@ function unclosable(db: StateDatabase): StateDatabase {
 interface Generation extends Ghost {
 	/**
 	 * Take the notes this generation still owes the daily file: a reset's note left untaken,
-	 * and the active context's. Waits for idle; rejects when a note fails.
+	 * and the active context's. Waits for idle; rejects when a note fails. Returns the day its
+	 * consolidation would start the next night at.
 	 */
-	retire(): Promise<void>
+	retire(): Promise<string | undefined>
 }
 
 interface GenerationOptions {
@@ -218,7 +219,7 @@ interface GenerationOptions {
 	prefix: string | undefined
 	/** The day a consolidation task this generation creates starts at. */
 	from: string | undefined
-	afterNight(from: string): void
+	afterNight(): void
 }
 
 /** The ghost on one generation of its state. */
@@ -453,6 +454,7 @@ async function open(
 			await root.waitForIdle(context)
 			const { messages } = await root.context(context)
 			await notes.append(await notes.take(messages, alive.context.abortSignal))
+			return consolidationFrom(root, context)
 		},
 		async close() {
 			alive.cancel()
