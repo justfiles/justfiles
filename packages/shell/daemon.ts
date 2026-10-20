@@ -1,5 +1,6 @@
 import { rm } from 'node:fs/promises'
 import { createServer, type Socket } from 'node:net'
+import type { AuthEvent } from '@earendil-works/pi-ai'
 import type { Ghost, GhostStatus } from '@justfiles/ghost'
 import { asRequest, decoder, encode, type Reply, type Request } from './protocol.ts'
 
@@ -22,13 +23,24 @@ export function idle(
 }
 
 /**
- * Serve `ghost` on the Unix socket at `path` until it has stayed idle for `idleMs` or
- * `signal` aborts, then close the ghost. Resolves once it is closed.
+ * The shell's own sign-in, run for a `login` request. `signal` aborts when the client
+ * leaves. Resolves true when the daemon has to restart to use the new credential.
+ */
+export type Login = (
+	device: boolean,
+	notify: (event: AuthEvent) => void,
+	signal: AbortSignal
+) => Promise<boolean>
+
+/**
+ * Serve `ghost` on the Unix socket at `path` until it has stayed idle for `idleMs`,
+ * `signal` aborts or a login asks for a restart, then close the ghost. Resolves once it
+ * is closed.
  */
 export async function serve(
 	ghost: Ghost,
 	path: string,
-	opts: { idleMs?: number; signal?: AbortSignal } = {}
+	opts: { idleMs?: number; signal?: AbortSignal; login?: Login } = {}
 ): Promise<void> {
 	const idleMs = opts.idleMs ?? IDLE_MS
 	const clients = new Set<Socket>()
@@ -52,7 +64,7 @@ export async function serve(
 		check()
 	})
 
-	async function handle(request: Request, send: (reply: Reply) => void) {
+	async function handle(request: Request, send: (reply: Reply) => void, left: AbortSignal) {
 		switch (request.type) {
 			case 'ask': {
 				const { id, text, cwd, steer } = request
@@ -67,6 +79,14 @@ export async function serve(
 				return send({ type: 'done', request: 'new' })
 			case 'status':
 				if (status !== undefined) send({ type: 'status', status })
+				return
+			case 'login': {
+				if (opts.login === undefined) throw new Error('login is not available')
+				const notify = (event: AuthEvent) => send({ type: 'auth', event })
+				const restart = await opts.login(request.device === true, notify, left)
+				send({ type: 'done', request: 'login' })
+				if (restart) stop()
+			}
 		}
 	}
 
@@ -77,6 +97,7 @@ export async function serve(
 			if (!socket.destroyed) socket.write(encode(reply))
 		}
 		const unsubscribe = ghost.watch(send)
+		const left = new AbortController()
 		socket.setEncoding('utf8')
 		socket.on(
 			'data',
@@ -84,7 +105,7 @@ export async function serve(
 				(message) => {
 					const request = asRequest(message)
 					if (request === undefined) return send({ type: 'error', message: 'not a request' })
-					handle(request, send).catch((error: unknown) =>
+					handle(request, send, left.signal).catch((error: unknown) =>
 						send({ type: 'error', message: error instanceof Error ? error.message : String(error) })
 					)
 				},
@@ -94,6 +115,7 @@ export async function serve(
 		// A client that vanishes mid-write is the same as one that left.
 		socket.on('error', () => {})
 		socket.on('close', () => {
+			left.abort()
 			unsubscribe()
 			clients.delete(socket)
 			check()

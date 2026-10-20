@@ -34,12 +34,13 @@ describe('framing', () => {
 })
 
 describe('asRequest', () => {
-	it('accepts the four requests', () => {
+	it('accepts the five requests', () => {
 		for (const request of [
 			{ type: 'ask', id: 'a', text: 'hi', cwd: '/notes', steer: true },
 			{ type: 'abort' },
 			{ type: 'new', handoff: 'carry on' },
-			{ type: 'status' }
+			{ type: 'status' },
+			{ type: 'login', device: true }
 		])
 			expect(asRequest(request)).toEqual(request)
 	})
@@ -51,7 +52,8 @@ describe('asRequest', () => {
 			{ type: 'ask', id: 'a', text: 'hi' },
 			{ type: 'ask', id: 1, text: 'hi', cwd: '/' },
 			{ type: 'new', handoff: 3 },
-			{ type: 'login' }
+			{ type: 'login', device: 'yes' },
+			{ type: 'logout' }
 		])
 			expect(asRequest(message)).toBeUndefined()
 	})

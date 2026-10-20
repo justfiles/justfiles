@@ -3,13 +3,15 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { createModels } from '@earendil-works/pi-ai'
+import { type AuthPrompt, createModels, type Models } from '@earendil-works/pi-ai'
 import { openaiProvider } from '@earendil-works/pi-ai/providers/openai'
+import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex'
 import { volume } from '@justfiles/fs'
 import { fsStore } from '@justfiles/fs/fs'
 import { openGhost, type ShellRecord } from '@justfiles/ghost'
 import { openNodeSqliteState } from '@justfiles/ghost/state/node-sqlite'
-import { serve } from './daemon.ts'
+import { volumeCredentials } from './credentials.ts'
+import { type Login, serve } from './daemon.ts'
 import { filesRoot, shellDir, socketPath } from './paths.ts'
 
 /** Run the daemon until it goes idle. Returns at once when another daemon holds the lock. */
@@ -19,22 +21,81 @@ export async function main(): Promise<void> {
 	const release = lock(join(dir, 'lock'))
 	if (release === undefined) return
 	try {
-		// For now the provider reads OPENAI_API_KEY; Sign in with ChatGPT replaces it.
-		const models = createModels()
+		const shell = await shellRecord(join(dir, 'shell.json'))
+		const { model: modelId = DEFAULT_MODEL } =
+			(await readJson<Settings>(join(dir, 'settings.json'))) ?? {}
+		// The credentials live in the Volume's private mount, which the ghost's Volume leaves
+		// unbound: the agent's files never include them.
+		const privateRoot = join(filesRoot(), 'private')
+		await mkdir(privateRoot, { recursive: true, mode: 0o700 })
+		const models = createModels({
+			credentials: volumeCredentials(volume(fsStore(privateRoot)), '/ghost/credentials.json')
+		})
 		models.setProvider(openaiProvider())
+		models.setProvider(openaiCodexProvider())
+		const provider = await chatgpt(models)
+		if (models.getModel(provider, modelId) === undefined) {
+			const offered = models.getModels(provider).map((model) => model.id)
+			throw new Error(
+				`${provider} has no model ${modelId}; settings.json can name ${offered.join(', ')}`
+			)
+		}
 		const ghost = await openGhost({
 			volume: volume(fsStore(filesRoot(), { mounts: ['private'] })),
 			state: await openNodeSqliteState(join(dir, 'state.sqlite')),
 			models,
-			shell: await shellRecord(join(dir, 'shell.json')),
-			settings: { model: { provider: 'openai', modelId: 'gpt-5.5' } }
+			shell,
+			settings: { model: { provider, modelId } }
 		})
+		const login: Login = async (device, notify, signal) => {
+			await models.login(
+				device ? 'openai-codex' : 'openai',
+				'oauth',
+				{ signal, notify, prompt: answer },
+				{ getDeviceId: () => shell.id, agentName: 'ghost' }
+			)
+			// The ghost's model names its provider; the next daemon opens it with the new one.
+			return (await chatgpt(models)) !== provider
+		}
 		const stop = new AbortController()
 		for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => stop.abort())
-		await serve(ghost, socketPath(dir), { signal: stop.signal })
+		await serve(ghost, socketPath(dir), { signal: stop.signal, login })
 	} finally {
 		release()
 	}
+}
+
+/**
+ * The model when `settings.json` in the shell directory names none. Sign in with ChatGPT
+ * takes only the GPT-5.6 and GPT-6 models of `openai`'s list; an API key takes them too.
+ */
+const DEFAULT_MODEL = 'gpt-6.1-sol'
+
+interface Settings {
+	/** A model id on the provider in use; every one is on `openai`. */
+	model?: string
+}
+
+/**
+ * The provider asks go to: `openai` with Sign in with ChatGPT or `OPENAI_API_KEY`, or the
+ * legacy `openai-codex` when only its device code sign-in is stored.
+ */
+async function chatgpt(models: Models): Promise<'openai' | 'openai-codex'> {
+	if ((await models.checkAuth('openai')) !== undefined) return 'openai'
+	return (await models.checkAuth('openai-codex')) !== undefined ? 'openai-codex' : 'openai'
+}
+
+/**
+ * Answers a login flow's prompts with nobody to type them. The legacy flow asks for its
+ * method only when it is used for its device code. The new flow offers to paste the
+ * redirect URL; the callback server answers instead, and the flow then aborts the prompt.
+ */
+async function answer(prompt: AuthPrompt): Promise<string> {
+	if (prompt.type === 'select') return 'device_code'
+	const { signal } = prompt
+	if (prompt.type === 'manual_code' && signal !== undefined)
+		await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }))
+	throw new Error(`cannot answer "${prompt.message}"`)
 }
 
 /**
@@ -56,11 +117,8 @@ function lock(path: string): (() => void) | undefined {
 
 /** This shell's record, created with a fresh id on first run. */
 async function shellRecord(path: string): Promise<ShellRecord> {
-	try {
-		return JSON.parse(await readFile(path, 'utf8'))
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-	}
+	const saved = await readJson<ShellRecord>(path)
+	if (saved !== undefined) return saved
 	const record: ShellRecord = {
 		id: randomUUID(),
 		name: hostname(),
@@ -68,4 +126,13 @@ async function shellRecord(path: string): Promise<ShellRecord> {
 	}
 	await writeFile(path, `${JSON.stringify(record, null, '\t')}\n`, { flag: 'wx' })
 	return record
+}
+
+/** The JSON in the file at `path`, or undefined when there is none. */
+async function readJson<T>(path: string): Promise<T | undefined> {
+	try {
+		return JSON.parse(await readFile(path, 'utf8'))
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+	}
 }

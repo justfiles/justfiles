@@ -103,6 +103,59 @@ describe('serve', () => {
 		await served
 		await watching
 	})
+
+	it('relays a login and restarts when it asks to', async () => {
+		const logins: boolean[] = []
+		const served = serve(await ghost(), socketPath(dir), {
+			login: async (device, notify) => {
+				logins.push(device)
+				notify({ type: 'auth_url', url: 'https://example.test/authorize' })
+				return device
+			}
+		})
+
+		const replies: Reply[] = []
+		const login = (request: Request) =>
+			connected(dir).then((socket) =>
+				exchange(socket, request, (reply) => {
+					if (reply.type === 'auth' || reply.type === 'done') replies.push(reply)
+					return reply.type === 'done'
+				})
+			)
+		await login({ type: 'login' })
+		await login({ type: 'login', device: true })
+
+		expect(logins).toEqual([false, true])
+		expect(replies).toEqual([
+			{ type: 'auth', event: { type: 'auth_url', url: 'https://example.test/authorize' } },
+			{ type: 'done', request: 'login' },
+			{ type: 'auth', event: { type: 'auth_url', url: 'https://example.test/authorize' } },
+			{ type: 'done', request: 'login' }
+		])
+		await served
+	})
+
+	it('aborts a login when its client leaves', async () => {
+		const stop = new AbortController()
+		let aborted: () => void = () => {}
+		const left = new Promise<void>((resolve) => {
+			aborted = resolve
+		})
+		const served = serve(await ghost(), socketPath(dir), {
+			signal: stop.signal,
+			login: (_device, notify, signal) => {
+				signal.addEventListener('abort', aborted)
+				notify({ type: 'progress', message: 'waiting' })
+				return new Promise(() => {})
+			}
+		})
+
+		const socket = await connected(dir)
+		await exchange(socket, { type: 'login' }, (reply) => reply.type === 'auth')
+		await left
+		stop.abort()
+		await served
+	})
 })
 
 async function one(dir: string, request: Request, type: Reply['type']) {
