@@ -111,6 +111,18 @@ describe('mutation', () => {
 		expect(await fs.readFile('/dst')).toBe('data')
 	})
 
+	test('cp refuses to copy a directory into itself, also through a link', async () => {
+		const { vol, fs } = fresh()
+		await fs.mkdir('/src/a', { recursive: true })
+		await fs.writeFile('/src/a/f', 'x')
+		await vol.symlink('/src', '/alias')
+		for (const dest of ['/src', '/src/sub', '/alias/sub'])
+			await expect(fs.cp('/src', dest, { recursive: true }), dest).rejects.toMatchObject({
+				code: 'EINVAL'
+			})
+		expect(await fs.readdir('/src')).toEqual(['a'])
+	})
+
 	test('mv renames', async () => {
 		const { fs } = fresh()
 		await fs.writeFile('/m1', 'm')

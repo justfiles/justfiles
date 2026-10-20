@@ -130,6 +130,10 @@ export function volumeFs(
 		async cp(src, dest, options) {
 			if (!options?.recursive || !(await fs.lstat(src)).isDirectory)
 				return guard(dest, () => guard(src, () => vol.cp(src, dest)))
+			// Checked where both really are, as the Volume's own copy does, or it never ends.
+			const [from, to] = await Promise.all([reached(src), reached(dest)])
+			if (to === from || to.startsWith(`${from}/`))
+				throw Object.assign(new Error(`EINVAL: cannot copy ${src} into itself`), { code: 'EINVAL' })
 			await fs.mkdir(dest, { recursive: true })
 			for (const name of await fs.readdir(src))
 				await fs.cp(join(src, name), join(dest, name), options)
