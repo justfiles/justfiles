@@ -1130,6 +1130,48 @@ describe('nightly consolidation', () => {
 		)
 	})
 
+	it('keeps the days of a first night a rotation cuts off', async () => {
+		const path = join(dir, 'state.sqlite')
+		const world = volume(memStore())
+		await put(world, '/system/memory/daily/2026-10-19.test.md', '- A.')
+		await put(world, '/system/memory/daily/2026-10-20.test.md', '- B.')
+		const requests: string[] = []
+		let hold = true
+		faux.setResponses(
+			Array.from(
+				{ length: 20 },
+				() => (context: { messages: readonly object[] }, options?: { signal?: AbortSignal }) => {
+					const [system] = context.messages as { role: string; content?: unknown }[]
+					if (system?.role !== 'system' || !String(system.content).includes('durable memory'))
+						return fauxAssistantMessage('ok')
+					requests.push(String((context.messages.at(-1) as { content: unknown }).content))
+					// The overdue first night waits on the model until the rotation closes it.
+					if (hold)
+						return new Promise<never>((_, reject) =>
+							options?.signal?.addEventListener('abort', () => reject(new Error('aborted')))
+						)
+					return fauxAssistantMessage('- From A and B.')
+				}
+			)
+		)
+		await (await openOn(path, undefined, world)).close()
+
+		vi.setSystemTime(new Date('2026-10-21T09:00:00Z'))
+		const state = await openNodeSqliteState(path)
+		const ghost = await openBounded(state, world, 1024 * 1024)
+		await vi.waitFor(() => expect(requests).toHaveLength(1))
+		await state.exec('CREATE TABLE ballast (bytes BLOB)')
+		await state.run('INSERT INTO ballast VALUES (zeroblob(2097152))')
+		await ghost.ask('first', { id: '1' })
+		await vi.waitFor(async () => expect(await tables(state)).not.toContain('ballast'))
+		hold = false
+		await vi.advanceTimersByTimeAsync(19 * 60 * 60_000)
+
+		await vi.waitFor(() => expect(wakeOf(ghost)).toBe(at('2026-10-23T04:00:00Z')))
+		expect(requests[1]).toContain('- A.')
+		expect(requests[1]).toContain('- B.')
+	})
+
 	it('starts the new generation at the day a rotation the process died in kept', async () => {
 		const world = volume(memStore())
 		await put(world, '/system/memory/daily/2026-10-17.test.md', '- Older.')

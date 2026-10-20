@@ -25,14 +25,14 @@ const STEP_MS = 60 * 60_000
 const TEMP = `${paths.MEMORY}.tmp`
 
 /**
- * `until` is the next wake. `from` is the first day whose notes are not in core.md yet;
- * without it, the day before the first wake. A `write` holds the rewrite of core.md and the hash it replaces.
+ * `until` is the next wake. `from` is the first day whose notes are not in core.md yet. A
+ * `write` holds the rewrite of core.md and the hash it replaces.
  */
 type Checkpoint =
-	| { phase: 'sleep'; until: number; from?: string }
-	| { phase: 'consolidate'; until: number; from?: string }
+	| { phase: 'sleep'; until: number; from: string }
+	| { phase: 'consolidate'; until: number; from: string }
 	| { phase: 'write'; until: number; from: string; today: string; base: string; next: string }
-type Input = { until: number; from?: string }
+type Input = { until: number; from: string }
 
 interface ConsolidationDeps {
 	volume: Volume
@@ -84,12 +84,11 @@ export function consolidationTask(deps: ConsolidationDeps) {
 				)
 			},
 			async consolidate(task, runtime, context) {
-				const { until, from } = task.state.checkpoint
+				const { until, from: start } = task.state.checkpoint
 				deps.onWake(until)
-				// The days before today, from `from` on, or from the day before the wake this was
-				// armed for: a wake missed while the machine was off takes them all once it is back.
+				// The days before today, from `start` on: a wake missed while the machine was off
+				// takes them all once it is back.
 				const today = dayInTz(new Date(runtime.now()), timeZone)
-				const start = from ?? dayBefore(dayInTz(new Date(until), timeZone))
 				const days = daysFrom(start, today).slice(-MAX_DAYS)
 				let rewrite: { base: string; next: string } | undefined
 				try {
@@ -132,7 +131,7 @@ export function consolidationTask(deps: ConsolidationDeps) {
 
 /**
  * Keep one consolidation task alive on `conversation` when `on`, created at the next 04:00
- * starting at `from`, or abort it when not. Returns its next wake.
+ * starting at `from`, or the day before that wake, or abort it when not. Returns its next wake.
  */
 export async function armConsolidation(
 	harness: Harness,
@@ -152,10 +151,14 @@ export async function armConsolidation(
 	const until = nextLocalHour(Date.now(), HOUR, opts.timeZone)
 	await conversation.commit(
 		(tx) =>
-			tx.createTask(task, opts.from === undefined ? { until } : { until, from: opts.from }, {
-				ownership: { kind: 'conversation' },
-				background: true
-			}),
+			tx.createTask(
+				task,
+				{ until, from: opts.from ?? dayBefore(dayInTz(new Date(until), opts.timeZone)) },
+				{
+					ownership: { kind: 'conversation' },
+					background: true
+				}
+			),
 		context
 	)
 	return until
