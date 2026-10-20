@@ -97,6 +97,7 @@ export async function openRotating(deps: GhostDeps, maxBytes: number): Promise<G
 			state: unclosable(db),
 			prefix: prefixOf(generation),
 			from: carried.from,
+			idsBefore: carried.idsBefore ?? 0,
 			afterNight: check
 		})
 	try {
@@ -172,10 +173,13 @@ export async function openRotating(deps: GhostDeps, maxBytes: number): Promise<G
 	return {
 		// Checked after every ask too, so a shell that never consolidates stays bounded.
 		async ask(text, opts) {
-			// Asked before the last rotation: its answer is gone from the state with the generation.
-			const settled = carried.asked?.[opts.id]
-			if (settled !== undefined) return settled
-			return call((ghost) => ghost.ask(text, opts)).finally(() => {
+			return call((ghost) => {
+				// Asked before the last rotation: its answer is gone from the state with the generation.
+				const { asked } = carried
+				if (asked !== undefined && Object.hasOwn(asked, opts.id))
+					return Promise.resolve(asked[opts.id] as Settled)
+				return ghost.ask(text, opts)
+			}).finally(() => {
 				check()
 			})
 		},
@@ -226,6 +230,8 @@ interface GenerationOptions {
 	prefix: string | undefined
 	/** The day a consolidation task this generation creates starts at. */
 	from: string | undefined
+	/** Entry ids the generations before this one used, which the mirror's ids go on from. */
+	idsBefore: number
 	afterNight(): void
 }
 
@@ -321,11 +327,16 @@ async function open(
 		shellId: deps.shell.id,
 		timeZone,
 		async *scan(after) {
+			// The mirror's ids run on across generations; pi's start again in each.
+			const { idsBefore } = opts
+			const own = after === undefined || after < idsBefore ? undefined : after - idsBefore
 			let cursor: Cursor | undefined
 			do {
-				const query = { minEntryId: after as EntryId | undefined, order: 'ascending' as const }
+				const query = { minEntryId: own as EntryId | undefined, order: 'ascending' as const }
 				const page = await root.entries(query, 50, cursor, context)
-				for (const entry of page.items) if (after === undefined || entry.id > after) yield entry
+				for (const entry of page.items)
+					if (own === undefined || entry.id > own)
+						yield { ...entry, id: (entry.id + idsBefore) as EntryId }
 				cursor = page.next
 			} while (cursor !== undefined)
 		}
@@ -453,7 +464,11 @@ async function open(
 			await notes.append(await notes.take(messages, alive.context.abortSignal))
 			const from = await consolidationFrom(root, context)
 			const asked = await root.commit((tx) => latestAsks(tx, root.id), context)
-			return from === undefined ? { asked } : { from, asked }
+			// The mirror takes every entry before the generation goes; the next one's ids follow.
+			await mirror.sync()
+			const newest = (await root.entries({}, 1, undefined, context)).items[0]?.id ?? 0
+			const idsBefore = opts.idsBefore + newest
+			return from === undefined ? { asked, idsBefore } : { from, asked, idsBefore }
 		},
 		async close() {
 			alive.cancel()
@@ -479,7 +494,8 @@ async function latestAsks(
 	tx: Tx,
 	conversationId: ConversationId
 ): Promise<Record<string, Settled>> {
-	const asked: Record<string, Settled> = {}
+	// No prototype, so an id such as `__proto__` is an entry like any other.
+	const asked: Record<string, Settled> = Object.create(null)
 	let seen = 0
 	let cursor: Cursor | undefined
 	do {

@@ -1263,6 +1263,94 @@ describe('state rotation', () => {
 		expect(snapshotOf(third).transcript.entries).toEqual([])
 	})
 
+	it('answers a retry that arrives during the rotation from the old generation', async () => {
+		const path = join(dir, 'state.sqlite')
+		faux.setResponses([fauxAssistantMessage('Paris')])
+		const first = await openOn(path)
+		await first.ask('Capital of France?', { id: 'q1' })
+		await first.close()
+
+		let noted: () => void = () => {}
+		const noting = new Promise<void>((resolve) => {
+			noted = resolve
+		})
+		faux.setResponses([
+			async () => {
+				await noting
+				return fauxAssistantMessage('- Asked about France.')
+			},
+			fauxAssistantMessage('Asked again')
+		])
+		const second = await openBounded(await openNodeSqliteState(path), volume(memStore()), 0)
+		await vi.waitFor(() => expect(faux.state.callCount).toBe(2))
+		const retried = second.ask('Capital of France?', { id: 'q1' })
+		noted()
+
+		expect(await retried).toEqual({ id: 'q1', status: 'done', text: 'Paris' })
+		expect(faux.state.callCount).toBe(2)
+	})
+
+	it('carries asks whose ids name Object properties, and does not mistake them for answers', async () => {
+		const path = join(dir, 'state.sqlite')
+		faux.setResponses([fauxAssistantMessage('Paris')])
+		const first = await openOn(path)
+		await first.ask('Capital of France?', { id: '__proto__' })
+		await first.close()
+
+		faux.setResponses([fauxAssistantMessage('- Asked about France.'), fauxAssistantMessage('Rome')])
+		const second = await openBounded(await openNodeSqliteState(path), volume(memStore()), 0)
+		await vi.waitFor(() => expect(snapshotOf(second).transcript.entries).toEqual([]))
+
+		expect(await second.ask('Capital of France?', { id: '__proto__' })).toEqual({
+			id: '__proto__',
+			status: 'done',
+			text: 'Paris'
+		})
+		expect(await second.ask('Capital of Italy?', { id: 'constructor' })).toEqual({
+			id: 'constructor',
+			status: 'done',
+			text: 'Rome'
+		})
+		expect(faux.state.callCount).toBe(3)
+	})
+
+	it('mirrors the new generation after the old one, with ids that go on rising', async () => {
+		const path = join(dir, 'state.sqlite')
+		const world = volume(memStore())
+		faux.setResponses([fauxAssistantMessage('one'), fauxAssistantMessage('two')])
+		const first = await openOn(path, undefined, world)
+		await first.ask('first', { id: '1' })
+		await first.ask('second', { id: '2' })
+		await first.close()
+
+		faux.setResponses([fauxAssistantMessage('- Asked twice.'), fauxAssistantMessage('three')])
+		const second = await openBounded(await openNodeSqliteState(path), world, 0)
+		await vi.waitFor(() => expect(snapshotOf(second).transcript.entries).toEqual([]))
+		await second.ask('third', { id: '3' })
+		await second.close()
+		// A reopen carries on from the mirrored ids, not the generation's own.
+		faux.setResponses([fauxAssistantMessage('four')])
+		const third = await openOn(path, undefined, world)
+		await third.ask('fourth', { id: '4' })
+		await third.close()
+
+		const lines = parseLines(
+			dec(await world.readFile(`/system/agents/main/transcripts/test/${today()}.jsonl`))
+		)
+		expect(lines.filter((line) => line.kind !== 'tool')).toMatchObject([
+			{ kind: 'user', text: 'first' },
+			{ kind: 'assistant', text: 'one' },
+			{ kind: 'user', text: 'second' },
+			{ kind: 'assistant', text: 'two' },
+			{ kind: 'user', text: 'third' },
+			{ kind: 'assistant', text: 'three' },
+			{ kind: 'user', text: 'fourth' },
+			{ kind: 'assistant', text: 'four' }
+		])
+		const ids = lines.map((line) => line.id)
+		expect(ids).toEqual([...new Set(ids)].sort((a, b) => a - b))
+	})
+
 	it('keeps the old generation when its note fails, and rotates once one is taken', async () => {
 		const path = join(dir, 'state.sqlite')
 		const world = volume(memStore())

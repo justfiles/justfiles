@@ -13,12 +13,14 @@ export function prefixOf(generation: number): string | undefined {
 }
 
 /**
- * What a generation hands the next: the day its consolidation was to start the next night at,
- * and how its latest asks settled, so a retry of one is answered instead of asked again.
+ * What a generation hands the next: the day its consolidation was to start the next night at;
+ * how its latest asks settled, so a retry of one is answered instead of asked again; and the
+ * entry ids used so far, so the transcript mirror's ids keep rising.
  */
 export interface Carried {
 	from?: string
 	asked?: Record<string, Settled>
+	idsBefore?: number
 }
 
 /** The generation in use, 0 for a database that has never rotated, and what it was handed. */
