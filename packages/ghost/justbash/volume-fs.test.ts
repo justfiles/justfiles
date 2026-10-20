@@ -304,7 +304,9 @@ describe('denied prefixes', () => {
 			'ln -s accounts /private/a2; cat /private/a2/google.json',
 			'ls /alias/private',
 			'echo pwn > /alias/private/accounts/evil.json',
-			'ln -s private/accounts/new.json /dangling; echo pwn > /dangling'
+			'ln -s private/accounts/new.json /dangling; echo pwn > /dangling',
+			'ln -s private/accounts /pivot; ln -s pivot/../accounts/google.json /leak; cat /leak',
+			'ln -s pivot/../accounts/evil.json /leak2; echo pwn > /leak2'
 		]) {
 			// A refused redirect rejects the whole exec.
 			const result = await bash

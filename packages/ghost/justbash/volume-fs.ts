@@ -80,19 +80,34 @@ export function volumeFs(
 	)
 
 	/**
-	 * The path a Volume call on the normalised `p` lands on: every symlink on the way resolved,
-	 * the last one only with `follow`. Missing entries are kept as named, and so is a dangling
-	 * link's target, since a write through it creates that target.
+	 * The path a Volume call on `p` lands on, walked in the Volume's order: each symlink is
+	 * resolved before a `..` after it, the last one only with `follow`. Missing entries are kept
+	 * as named, and so is a dangling link's target, since a write through it creates that target.
 	 */
-	async function reached(p: string, follow = true, hops = 0): Promise<string> {
-		if (p === '/') return p
-		const parent = await reached(parentOf(p), true, hops)
-		const at = join(parent, p.slice(p.lastIndexOf('/') + 1))
-		if (!follow) return at
-		const st = await vol.lstat(at).catch(() => undefined)
-		if (st?.type !== FileType.Symlink) return at
-		if (hops >= 40) throw new Error('ELOOP: too many levels of symbolic links')
-		return reached(resolvePath(parent, await vol.readlink(at)), true, hops + 1)
+	async function reached(p: string, follow = true): Promise<string> {
+		const queue = p.split('/').filter((name) => name !== '')
+		let at = '/'
+		let hops = 0
+		while (queue.length > 0) {
+			const name = queue.shift() as string
+			if (name === '.') continue
+			if (name === '..') {
+				at = parentOf(at)
+				continue
+			}
+			const next = join(at, name)
+			const st =
+				queue.length === 0 && !follow ? undefined : await vol.lstat(next).catch(() => undefined)
+			if (st?.type !== FileType.Symlink) {
+				at = next
+				continue
+			}
+			if (++hops > 40) throw new Error('ELOOP: too many levels of symbolic links')
+			const target = await vol.readlink(next)
+			if (target.startsWith('/')) at = '/'
+			queue.unshift(...target.split('/').filter((part) => part !== ''))
+		}
+		return at
 	}
 
 	async function realpath(p: string): Promise<string> {
