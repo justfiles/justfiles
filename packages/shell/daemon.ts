@@ -6,20 +6,14 @@ import { asRequest, decoder, encode, type Reply, type Request } from './protocol
 
 /** How long the daemon stays up with nothing to do. */
 export const IDLE_MS = 5 * 60_000
-/** A wake this close keeps the daemon up. */
-const WAKE_MARGIN_MS = 5 * 60_000
 
 /**
- * May the daemon exit: no client connected, no input being answered, and no wake due soon.
- * `nextWakeAt` (epoch ms) counts once the ghost reports one; it reports none yet.
+ * May the daemon exit: no client connected, no input being answered, and no wake pending.
+ * Nothing starts the daemon for a wake, so one that is pending keeps it up, however far off:
+ * the consolidating shell's daemon stays up from one night to the next.
  */
-export function idle(
-	clients: number,
-	status: Pick<GhostStatus, 'busy'> & { nextWakeAt?: number },
-	now: number
-): boolean {
-	if (clients > 0 || status.busy) return false
-	return status.nextWakeAt === undefined || status.nextWakeAt - now > WAKE_MARGIN_MS
+export function idle(clients: number, status: Pick<GhostStatus, 'busy' | 'nextWakeAt'>): boolean {
+	return clients === 0 && !status.busy && status.nextWakeAt === undefined
 }
 
 /**
@@ -55,7 +49,7 @@ export async function serve(
 	// Re-armed on every change, so the daemon exits only after `idleMs` of nothing.
 	const check = () => {
 		clearTimeout(timer)
-		if (!closing && status !== undefined && idle(clients.size, status, Date.now()))
+		if (!closing && status !== undefined && idle(clients.size, status))
 			timer = setTimeout(stop, idleMs)
 	}
 	const unwatch = ghost.watch((event) => {

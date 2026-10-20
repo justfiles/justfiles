@@ -8,7 +8,10 @@ import type { Volume } from '@justfiles/fs'
 export interface GhostDeps {
 	/** The ghost's whole world: files, memory, transcripts. */
 	volume: Volume
-	/** Where the harness keeps conversation state. Closed by `Ghost.close`. */
+	/**
+	 * Where the harness keeps conversation state. The ghost owns every table in it: rotating
+	 * the state drops all but its own. Closed by `Ghost.close`.
+	 */
 	state: StateDatabase
 	/** Built by the shell; credentials are the shell's. */
 	models: Models
@@ -30,6 +33,11 @@ export interface GhostSettings {
 	model?: { provider: string; modelId: string }
 	/** Names the day of the daily notes and the time in the prompt. Default `UTC`. */
 	timeZone?: string
+	/**
+	 * Nightly consolidation of every shell's daily notes into core.md, at 04:00 in `timeZone`;
+	 * on unless `false`. One shell per Volume has it on.
+	 */
+	consolidate?: boolean
 	/** Automatic compaction; on unless `false`. An object tunes its thresholds, in tokens. */
 	compaction?:
 		| boolean
@@ -123,6 +131,11 @@ export interface GhostStatus {
 	busy: boolean
 	/** Inputs waiting for the current one. */
 	queued: number
+	/**
+	 * When the ghost next wakes on its own, in epoch ms; absent when nothing is scheduled, and
+	 * in the past while that work runs. The host keeps running for it.
+	 */
+	nextWakeAt?: number
 	usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number }
 }
 

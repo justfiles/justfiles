@@ -4,30 +4,27 @@ import { join } from 'node:path'
 import { createModels, fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai'
 import { volume } from '@justfiles/fs'
 import { memStore } from '@justfiles/fs/mem'
-import { openGhost } from '@justfiles/ghost'
+import { type GhostSettings, type GhostStatus, openGhost } from '@justfiles/ghost'
 import { openNodeSqliteState } from '@justfiles/ghost/state/node-sqlite'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { connect, exchange } from './client.ts'
-import { IDLE_MS, idle, serve } from './daemon.ts'
+import { idle, serve } from './daemon.ts'
 import { socketPath } from './paths.ts'
 import type { Reply, Request } from './protocol.ts'
 
 describe('idle', () => {
-	const now = 1_000_000_000
-
 	it('is idle with no client, nothing running and no wake', () => {
-		expect(idle(0, { busy: false }, now)).toBe(true)
+		expect(idle(0, { busy: false })).toBe(true)
 	})
 
 	it('is not idle while a client is connected or an input is answered', () => {
-		expect(idle(1, { busy: false }, now)).toBe(false)
-		expect(idle(0, { busy: true }, now)).toBe(false)
+		expect(idle(1, { busy: false })).toBe(false)
+		expect(idle(0, { busy: true })).toBe(false)
 	})
 
-	it('is not idle when a wake is due within a few minutes', () => {
-		expect(idle(0, { busy: false, nextWakeAt: now + 60_000 }, now)).toBe(false)
-		expect(idle(0, { busy: false, nextWakeAt: now - 1 }, now)).toBe(false)
-		expect(idle(0, { busy: false, nextWakeAt: now + IDLE_MS + 60 * 60_000 }, now)).toBe(true)
+	it('is not idle while a wake is pending, however far off', () => {
+		expect(idle(0, { busy: false, nextWakeAt: Date.now() + 20 * 60 * 60_000 })).toBe(false)
+		expect(idle(0, { busy: false, nextWakeAt: Date.now() - 1 })).toBe(false)
 	})
 })
 
@@ -44,7 +41,8 @@ describe('serve', () => {
 		await rm(dir, { recursive: true, force: true })
 	})
 
-	async function ghost() {
+	/** A ghost on a shell that does not consolidate, so nothing wakes it. */
+	async function ghost(settings: GhostSettings = { consolidate: false }) {
 		const models = createModels()
 		models.setProvider(faux.provider)
 		return openGhost({
@@ -52,7 +50,7 @@ describe('serve', () => {
 			state: await openNodeSqliteState(':memory:'),
 			models,
 			shell: { id: 'test', name: 'Test', kind: 'test' },
-			settings: { model: { provider: 'faux', modelId: 'faux-1' } }
+			settings: { model: { provider: 'faux', modelId: 'faux-1' }, ...settings }
 		})
 	}
 
@@ -153,6 +151,28 @@ describe('serve', () => {
 		const socket = await connected(dir)
 		await exchange(socket, { type: 'login' }, (reply) => reply.type === 'auth')
 		await left
+		stop.abort()
+		await served
+	})
+
+	it('stays up for the next wake and reports it in status', async () => {
+		const stop = new AbortController()
+		let closed = false
+		const served = serve(await ghost({}), socketPath(dir), {
+			idleMs: 20,
+			signal: stop.signal
+		}).then(() => {
+			closed = true
+		})
+
+		const status = await one(dir, { type: 'status' }, 'status')
+		await new Promise((resolve) => setTimeout(resolve, 100))
+
+		expect(status).toMatchObject({ status: { nextWakeAt: expect.any(Number) } })
+		expect(new Date((status as { status: GhostStatus }).status.nextWakeAt ?? 0).getUTCHours()).toBe(
+			4
+		)
+		expect(closed).toBe(false)
 		stop.abort()
 		await served
 	})

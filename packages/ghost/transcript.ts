@@ -14,6 +14,7 @@ export function createTranscript(snapshot: SnapshotEvent) {
 	// Of the partial's text, what listeners have been sent.
 	let sent: string
 	let status: GhostStatus
+	let nextWakeAt: number | undefined
 
 	function load(event: SnapshotEvent): void {
 		records = [...event.entries]
@@ -23,6 +24,7 @@ export function createTranscript(snapshot: SnapshotEvent) {
 		status = {
 			busy: event.run !== undefined,
 			queued: event.inbox.length,
+			...(nextWakeAt === undefined ? {} : { nextWakeAt }),
 			usage: total(event.usage)
 		}
 	}
@@ -116,8 +118,17 @@ export function createTranscript(snapshot: SnapshotEvent) {
 		return out
 	}
 
+	/** Set the next wake, which pi's events do not carry, and return what listeners see of it. */
+	function wake(at: number | undefined): TranscriptEvent[] {
+		if (at === nextWakeAt) return []
+		nextWakeAt = at
+		const { busy, queued, usage } = status
+		status = { busy, queued, ...(at === undefined ? {} : { nextWakeAt: at }), usage }
+		return [{ type: 'status', status }]
+	}
+
 	load(snapshot)
-	return { current, apply }
+	return { current, apply, wake }
 }
 
 /** Our record of one pi entry; undefined for bookkeeping the transcript does not show. */

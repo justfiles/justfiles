@@ -11,6 +11,7 @@ import {
 import { type Volume, volume } from '@justfiles/fs'
 import { memStore } from '@justfiles/fs/mem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { openRotating } from './ghost.ts'
 import {
 	type Ghost,
 	type GhostSettings,
@@ -20,6 +21,7 @@ import {
 } from './index.ts'
 import { parseLines } from './mirror.ts'
 import { openNodeSqliteState } from './state/node-sqlite.ts'
+import type { StateDatabase } from './types.ts'
 
 let dir: string
 let faux: ReturnType<typeof fauxProvider>
@@ -43,18 +45,39 @@ async function openOn(
 	tools?: Tool[],
 	world: Volume = volume(memStore()),
 	settings: GhostSettings = {},
-	shell = { id: 'test', name: 'Test', kind: 'test' }
+	shell = TEST_SHELL
 ): Promise<Ghost> {
-	const ghost = await openGhost({
+	const ghost = await openGhost(
+		depsOn(await openNodeSqliteState(path), world, tools, settings, shell)
+	)
+	open.push(ghost)
+	return ghost
+}
+
+/** A ghost on `state` that rotates it past `maxBytes`. */
+async function openBounded(state: StateDatabase, world: Volume, maxBytes: number) {
+	const ghost = await openRotating(depsOn(state, world), maxBytes)
+	open.push(ghost)
+	return ghost
+}
+
+const TEST_SHELL = { id: 'test', name: 'Test', kind: 'test' }
+
+function depsOn(
+	state: StateDatabase,
+	world: Volume,
+	tools?: Tool[],
+	settings: GhostSettings = {},
+	shell = TEST_SHELL
+) {
+	return {
 		volume: world,
-		state: await openNodeSqliteState(path),
+		state,
 		models,
 		shell,
 		tools,
 		settings: { model: { provider: 'faux', modelId: 'faux-1' }, ...settings }
-	})
-	open.push(ghost)
-	return ghost
+	}
 }
 
 function record(ghost: Ghost): TranscriptEvent[] {
@@ -884,3 +907,195 @@ describe('transcript mirror, shell record and transcript tool', () => {
 		expect(found).toContain('Pot it in peat-free compost.')
 	})
 })
+
+describe('nightly consolidation', () => {
+	beforeEach(() => {
+		vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+		vi.setSystemTime(new Date('2026-10-20T03:00:00Z'))
+	})
+
+	afterEach(() => {
+		vi.useRealTimers()
+	})
+
+	const CORE = '/system/memory/core.md'
+	const at = (iso: string) => Date.parse(iso)
+	const wakeOf = (ghost: Ghost) => snapshotOf(ghost).status.nextWakeAt
+
+	/** Answer consolidation requests with `answers` in turn, keeping each request's notes. */
+	function consolidations(...answers: (string | (() => Promise<void>))[]): string[] {
+		const requests: string[] = []
+		const steps: (string | (() => Promise<void>))[] = [...answers]
+		faux.setResponses(
+			answers
+				.filter((answer) => typeof answer === 'string')
+				.map(() => async (context) => {
+					requests.push(String((context.messages.at(-1) as { content: unknown }).content))
+					for (let step = steps.shift(); step !== undefined; step = steps.shift()) {
+						if (typeof step === 'string') return fauxAssistantMessage(step)
+						await step()
+					}
+					throw new Error('no answer left')
+				})
+		)
+		return requests
+	}
+
+	it("appends yesterday's notes from every shell to core.md at 04:00, and arms the next night", async () => {
+		const world = volume(memStore())
+		await put(world, CORE, '- Likes tea.\n')
+		await put(world, '/system/memory/daily/2026-10-19.test.md', '- Fixed the login test.')
+		await put(world, '/system/memory/daily/2026-10-19.laptop.md', '- Prefers dark mode.')
+		await put(world, '/system/memory/daily/2026-10-20.test.md', '- Still today.')
+		const requests = consolidations('- Prefers dark mode.')
+		const ghost = await openOn(':memory:', undefined, world)
+		expect(wakeOf(ghost)).toBe(at('2026-10-20T04:00:00Z'))
+
+		await vi.advanceTimersByTimeAsync(59 * 60_000)
+		expect(requests).toEqual([])
+		await vi.advanceTimersByTimeAsync(60_000)
+
+		await vi.waitFor(() => expect(wakeOf(ghost)).toBe(at('2026-10-21T04:00:00Z')))
+		expect(dec(await world.readFile(CORE))).toBe(
+			'- Likes tea.\n\n## 2026-10-19\n\n- Prefers dark mode.\n'
+		)
+		expect(requests).toHaveLength(1)
+		expect(requests[0]).toContain('- Likes tea.')
+		expect(requests[0]).toContain('# Daily notes, 2026-10-19, shell laptop\n\n- Prefers dark mode.')
+		expect(requests[0]).toContain(
+			'# Daily notes, 2026-10-19, shell test\n\n- Fixed the login test.'
+		)
+		expect(requests[0]).not.toContain('Still today')
+		expect(await world.exists(`${CORE}.tmp`)).toBe(false)
+	})
+
+	it('leaves core.md alone when it changed during the night, and takes those days again the next', async () => {
+		const world = volume(memStore())
+		await put(world, CORE, '- Likes tea.\n')
+		await put(world, '/system/memory/daily/2026-10-19.test.md', '- A.')
+		const requests = consolidations(
+			// The agent appends a bullet while the night's answer is being made.
+			() => world.appendFile(CORE, enc('- Added meanwhile.\n')),
+			'- From A.',
+			'- From A and B.'
+		)
+		const ghost = await openOn(':memory:', undefined, world)
+
+		await vi.advanceTimersByTimeAsync(60 * 60_000)
+		await vi.waitFor(() => expect(wakeOf(ghost)).toBe(at('2026-10-21T04:00:00Z')))
+		expect(dec(await world.readFile(CORE))).toBe('- Likes tea.\n- Added meanwhile.\n')
+
+		await put(world, '/system/memory/daily/2026-10-20.test.md', '- B.')
+		await vi.advanceTimersByTimeAsync(24 * 60 * 60_000)
+		await vi.waitFor(() => expect(wakeOf(ghost)).toBe(at('2026-10-22T04:00:00Z')))
+		expect(dec(await world.readFile(CORE))).toBe(
+			'- Likes tea.\n- Added meanwhile.\n\n## 2026-10-19 to 2026-10-20\n\n- From A and B.\n'
+		)
+		expect(requests[1]).toContain('- A.')
+		expect(requests[1]).toContain('- B.')
+	})
+
+	it('runs a night missed while closed at the next open', async () => {
+		const path = join(dir, 'state.sqlite')
+		const world = volume(memStore())
+		await put(world, '/system/memory/daily/2026-10-19.test.md', '- A.')
+		consolidations('- From A.')
+		await (await openOn(path, undefined, world)).close()
+
+		vi.setSystemTime(new Date('2026-10-20T09:00:00Z'))
+		const ghost = await openOn(path, undefined, world)
+
+		await vi.waitFor(() => expect(wakeOf(ghost)).toBe(at('2026-10-21T04:00:00Z')))
+		expect(dec(await world.readFile(CORE))).toBe('## 2026-10-19\n\n- From A.\n')
+	})
+
+	it('neither wakes nor writes with consolidation off, and stops a night armed before', async () => {
+		const path = join(dir, 'state.sqlite')
+		const world = volume(memStore())
+		await put(world, '/system/memory/daily/2026-10-19.test.md', '- A.')
+		const requests = consolidations('- From A.')
+		await (await openOn(path, undefined, world)).close()
+
+		const ghost = await openOn(path, undefined, world, { consolidate: false })
+		await vi.advanceTimersByTimeAsync(2 * 60 * 60_000)
+
+		expect(wakeOf(ghost)).toBeUndefined()
+		expect(requests).toEqual([])
+		expect(await world.exists(CORE)).toBe(false)
+	})
+
+	it("rotates state that outgrew its bound after the night's work", async () => {
+		const world = volume(memStore())
+		const state = await openNodeSqliteState(':memory:')
+		faux.setResponses([fauxAssistantMessage('one')])
+		const ghost = await openBounded(state, world, 1024 * 1024)
+		await ghost.ask('first', { id: '1' })
+		// Two megabytes the next generation leaves behind with the rest of this one.
+		await state.exec('CREATE TABLE ballast (bytes BLOB)')
+		await state.run('INSERT INTO ballast VALUES (zeroblob(2097152))')
+
+		await vi.advanceTimersByTimeAsync(60 * 60_000)
+
+		await vi.waitFor(() => expect(snapshotOf(ghost).transcript.entries).toEqual([]))
+		expect(wakeOf(ghost)).toBe(at('2026-10-21T04:00:00Z'))
+		expect(await tables(state)).toEqual(expect.arrayContaining(['g1_entries', 'ghost_state']))
+		expect((await tables(state)).filter((name) => !/^(g1_|ghost_state$)/.test(name))).toEqual([])
+	})
+})
+
+describe('state rotation', () => {
+	it('moves to a fresh generation once the state outgrows its bound, after a note on the old one', async () => {
+		const path = join(dir, 'state.sqlite')
+		const world = volume(memStore())
+		faux.setResponses([fauxAssistantMessage('one'), fauxAssistantMessage('two')])
+		const first = await openOn(path, undefined, world)
+		await first.ask('first', { id: '1' })
+		await first.ask('second', { id: '2' })
+		await first.close()
+
+		faux.setResponses([fauxAssistantMessage('- Asked twice.'), fauxAssistantMessage('three')])
+		const second = await openBounded(await openNodeSqliteState(path), world, 0)
+		const settled = await second.ask('third', { id: '3' })
+
+		expect(settled).toEqual({ id: '3', status: 'done', text: 'three' })
+		expect(snapshotOf(second).transcript.entries).toMatchObject([
+			{ kind: 'user', text: 'third' },
+			{ kind: 'assistant', text: 'three' }
+		])
+		expect(await dailyOf(world, today())).toBe('- Asked twice.\n')
+		expect(snapshotOf(second).status.nextWakeAt).toEqual(expect.any(Number))
+		await second.close()
+		const state = await openNodeSqliteState(path)
+		expect((await tables(state)).filter((name) => !/^(g1_|ghost_state$)/.test(name))).toEqual([])
+		await state.close()
+
+		// The new generation is the one a later open finds.
+		const third = await openOn(path, undefined, world)
+		expect(snapshotOf(third).transcript.entries).toMatchObject([
+			{ kind: 'user', text: 'third' },
+			{ kind: 'assistant', text: 'three' }
+		])
+	})
+
+	it('drops the old generation at open when the process died before it did', async () => {
+		const path = join(dir, 'state.sqlite')
+		faux.setResponses([fauxAssistantMessage('one')])
+		const first = await openOn(path)
+		await first.ask('first', { id: '1' })
+		await first.close()
+		const state = await openNodeSqliteState(path)
+		await state.run('INSERT INTO ghost_state (singleton, generation) VALUES (1, 1)')
+
+		const second = await openBounded(state, volume(memStore()), Number.POSITIVE_INFINITY)
+
+		expect(snapshotOf(second).transcript.entries).toEqual([])
+		expect((await tables(state)).filter((name) => !/^(g1_|ghost_state$)/.test(name))).toEqual([])
+	})
+})
+
+async function tables(state: StateDatabase): Promise<string[]> {
+	const rows = await state.all<{ name: string }>(
+		"SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite%'"
+	)
+	return rows.map((row) => row.name)
+}

@@ -95,17 +95,26 @@ function block(heading: string, body: string | undefined): string | undefined {
 	return body?.trim() ? `${heading}\n\n${body.trim()}` : undefined
 }
 
-/** Every shell's daily files for `days`, oldest first. */
 async function recentNotes(volume: Volume, days: string[]): Promise<string | undefined> {
-	const notes: string[] = []
+	const notes = (await dailyNotes(volume, days)).map(
+		({ day, shell, text }) => `## ${day}, shell ${shell}\n\n${text}`
+	)
+	return notes.length === 0 ? undefined : [MEMORY_PREAMBLE, ...notes].join('\n\n')
+}
+
+/** Every shell's daily notes for `days`, oldest first, empty files left out. */
+export async function dailyNotes(
+	volume: Volume,
+	days: readonly string[]
+): Promise<{ day: string; shell: string; text: string }[]> {
+	const notes: { day: string; shell: string; text: string }[] = []
 	for (const name of await names(volume, paths.DAILY_DIR)) {
 		const day = days.find((day) => name.startsWith(`${day}.`) && name.endsWith('.md'))
 		if (day === undefined) continue
-		const shell = name.slice(day.length + 1, -'.md'.length)
-		const text = await readText(volume, `${paths.DAILY_DIR}/${name}`)
-		if (text?.trim()) notes.push(`## ${day}, shell ${shell}\n\n${text.trim()}`)
+		const text = (await readText(volume, `${paths.DAILY_DIR}/${name}`))?.trim()
+		if (text) notes.push({ day, shell: name.slice(day.length + 1, -'.md'.length), text })
 	}
-	return notes.length === 0 ? undefined : [MEMORY_PREAMBLE, ...notes].join('\n\n')
+	return notes
 }
 
 /**
