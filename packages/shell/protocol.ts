@@ -1,3 +1,4 @@
+import type { AuthEvent } from '@earendil-works/pi-ai'
 import type { Settled, TranscriptEvent } from '@justfiles/ghost'
 
 // The socket protocol: JSON lines, one message per line, each way. A connection gets the
@@ -8,13 +9,17 @@ export type Request =
 	| { type: 'abort' }
 	| { type: 'new'; handoff?: string }
 	| { type: 'status' }
+	/** Sign in with ChatGPT; `device` takes the legacy device code flow instead. */
+	| { type: 'login'; device?: boolean }
 
 export type Reply =
 	| TranscriptEvent
 	/** The ask with this `id` is answered or failed. */
 	| ({ type: 'settled' } & Settled)
-	/** An `abort` or `new` is done. */
-	| { type: 'done'; request: 'abort' | 'new' }
+	/** An `abort`, `new` or `login` is done. */
+	| { type: 'done'; request: 'abort' | 'new' | 'login' }
+	/** A step of a login in progress: the URL to open, a device code, progress. */
+	| { type: 'auth'; event: AuthEvent }
 	| { type: 'error'; message: string }
 
 export function encode(message: Request | Reply): string {
@@ -66,6 +71,8 @@ export function asRequest(message: unknown): Request | undefined {
 				: undefined
 		case 'new':
 			return optional('handoff', 'string') ? (m as Request) : undefined
+		case 'login':
+			return optional('device', 'boolean') ? (m as Request) : undefined
 		case 'abort':
 		case 'status':
 			return m as Request

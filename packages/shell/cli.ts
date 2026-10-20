@@ -1,6 +1,8 @@
+import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { realpathSync } from 'node:fs'
 import { parseArgs } from 'node:util'
+import type { AuthEvent } from '@earendil-works/pi-ai'
 import type { TranscriptEntry } from '@justfiles/ghost'
 import { connectOrStart, exchange, Lost } from './client.ts'
 import { main } from './main.ts'
@@ -13,6 +15,7 @@ const USAGE = `usage:
   ghost new [--handoff <text>]
   ghost abort
   ghost status
+  ghost login [--device]
   ghost serve`
 
 /** How often an ask is sent again after the daemon went away mid-answer. */
@@ -26,7 +29,8 @@ async function run(argv: string[]): Promise<number> {
 		options: {
 			json: { type: 'boolean' },
 			steer: { type: 'boolean' },
-			handoff: { type: 'string' }
+			handoff: { type: 'string' },
+			device: { type: 'boolean' }
 		}
 	})
 	const dir = shellDir()
@@ -65,8 +69,10 @@ async function run(argv: string[]): Promise<number> {
 							)
 								ours = true
 							else if (ours) printed = show(reply) !== '' || printed
-						} else if (reply.status === 'failed')
+						} else if (reply.status === 'failed') {
 							console.error(`ghost: ${reply.failure.kind}: ${reply.failure.message}`)
+							if (reply.failure.kind === 'auth') console.error('ghost: sign in with `ghost login`')
+						}
 						// Nothing streamed on this connection, as after a reconnect: show the whole answer.
 						else if (!printed) process.stdout.write(`${reply.text}\n`)
 						return reply.type === 'settled' || reply.type === 'error'
@@ -103,6 +109,21 @@ async function run(argv: string[]): Promise<number> {
 			if (error !== undefined) console.error(`ghost: ${error}`)
 			return error === undefined ? 0 : 1
 		}
+		case 'login': {
+			let error: string | undefined
+			await exchange(
+				await connectOrStart(dir),
+				{ type: 'login', ...(values.device ? { device: true } : {}) },
+				(reply) => {
+					if (reply.type === 'auth') announce(reply.event)
+					if (reply.type === 'error') error = reply.message
+					return reply.type === 'error' || (reply.type === 'done' && reply.request === 'login')
+				}
+			)
+			if (error !== undefined) console.error(`ghost: ${error}`)
+			else console.log('Signed in.')
+			return error === undefined ? 0 : 1
+		}
 		case 'status':
 			await exchange(await connectOrStart(dir), { type: 'status' }, (reply) => {
 				if (reply.type !== 'status') return false
@@ -125,6 +146,27 @@ function cwd(): string {
 		root = realpathSync(root)
 	} catch {}
 	return volumeCwd(process.cwd(), root)
+}
+
+/** A login step for the person signing in; the sign-in page opens in their browser. */
+function announce(event: AuthEvent): void {
+	switch (event.type) {
+		case 'auth_url':
+			console.log(`Sign in at ${event.url}`)
+			spawn(process.platform === 'darwin' ? 'open' : 'xdg-open', [event.url], {
+				detached: true,
+				stdio: 'ignore'
+			})
+				.on('error', () => {})
+				.unref()
+			return
+		case 'device_code':
+			console.log(`Open ${event.verificationUri} and enter ${event.userCode}`)
+			return
+		case 'info':
+		case 'progress':
+			console.log(event.message)
+	}
 }
 
 function json(reply: Reply): void {
