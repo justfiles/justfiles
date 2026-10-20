@@ -22,8 +22,9 @@ interface MirrorDeps {
 
 /**
  * This shell's conversation on the Volume, a JSONL file per day, each entry appended once and
- * in order. The newest mirrored entry is read back from the files, so a reopened ghost carries
- * on where the last process stopped. `sync` runs one pass at a time; calls during a pass
+ * in order. An entry goes to the day it was said, or to the newest file's day when that is
+ * later (an entry without a time, a changed time zone), so the newest file always holds the
+ * newest entry. That is read back at open, and a reopened ghost carries on from it. `sync` runs one pass at a time; calls during a pass
  * share the one queued after it.
  */
 export function createMirror({ volume, shellId, timeZone, scan }: MirrorDeps) {
@@ -31,6 +32,7 @@ export function createMirror({ volume, shellId, timeZone, scan }: MirrorDeps) {
 	// Read from the files by the first pass; passes run one at a time.
 	let loaded = false
 	let mark: number | undefined
+	let day: string | undefined
 	let torn: string | undefined
 	let chain: Promise<void> = Promise.resolve()
 	let queued = false
@@ -59,14 +61,16 @@ export function createMirror({ volume, shellId, timeZone, scan }: MirrorDeps) {
 
 	async function pass(): Promise<void> {
 		if (!loaded) {
-			;({ mark, torn } = await newest())
+			;({ mark, day, torn } = await newest())
 			loaded = true
 		}
 		for await (const record of scan(mark)) {
 			const entry = toEntry(record)
 			if (entry !== undefined) {
 				const at = new Date(record.model?.[0]?.timestamp ?? Date.now())
-				const path = paths.transcript(shellId, dayInTz(at, timeZone))
+				const said = dayInTz(at, timeZone)
+				if (day === undefined || said > day) day = said
+				const path = paths.transcript(shellId, day)
 				await volume.mkdir(dir, { recursive: true })
 				// A line a dying process left half written ends before this one starts.
 				const separator = torn === path ? '\n' : ''
@@ -81,8 +85,8 @@ export function createMirror({ volume, shellId, timeZone, scan }: MirrorDeps) {
 	}
 
 	/**
-	 * The id of the newest mirrored entry, from the newest file that holds one, and the newest
-	 * file when it ends mid-line.
+	 * The id of the newest mirrored entry, from the newest file that holds one; the newest
+	 * file's day; and that file when it ends mid-line.
 	 */
 	async function newest() {
 		const days = (await names(volume, dir)).filter((name) => name.endsWith('.jsonl'))
@@ -96,7 +100,7 @@ export function createMirror({ volume, shellId, timeZone, scan }: MirrorDeps) {
 			mark = parseLines(text).at(-1)?.id
 			if (mark !== undefined) break
 		}
-		return { mark, torn }
+		return { mark, day: last?.slice(0, -'.jsonl'.length), torn }
 	}
 }
 

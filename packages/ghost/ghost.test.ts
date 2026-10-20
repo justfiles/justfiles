@@ -788,6 +788,32 @@ describe('transcript mirror, shell record and transcript tool', () => {
 		])
 	})
 
+	it('keeps the newest entry in the newest file when the day goes back', async () => {
+		const world = volume(memStore())
+		const path = join(dir, 'state.sqlite')
+		faux.setResponses([
+			fauxAssistantMessage('one'),
+			fauxAssistantMessage('two'),
+			fauxAssistantMessage('three')
+		])
+		// 2026-10-20 in Auckland, then 2026-10-19 in UTC.
+		for (const [i, timeZone] of ['Pacific/Auckland', 'UTC', 'UTC'].entries()) {
+			const ghost = await openOn(path, undefined, world, { timeZone })
+			await ghost.ask(`Turn ${i}.`, { id: String(i) })
+			await ghost.close()
+		}
+
+		expect(await world.exists('/system/agents/main/transcripts/test/2026-10-19.jsonl')).toBe(false)
+		expect(await mirrorOf(world, 'test', '2026-10-20')).toMatchObject([
+			{ kind: 'user', text: 'Turn 0.' },
+			{ kind: 'assistant', text: 'one' },
+			{ kind: 'user', text: 'Turn 1.' },
+			{ kind: 'assistant', text: 'two' },
+			{ kind: 'user', text: 'Turn 2.' },
+			{ kind: 'assistant', text: 'three' }
+		])
+	})
+
 	it('writes the shell record at open and again after a turn', async () => {
 		const world = volume(memStore())
 		const ghost = await openOn(':memory:', [long], world)
