@@ -488,16 +488,13 @@ describe('sections and memory notes', () => {
 		const noting = new Promise<void>((resolve) => {
 			started = resolve
 		})
-		let release!: () => void
-		const held = new Promise<void>((resolve) => {
-			release = resolve
-		})
 		faux.setResponses([
 			fauxAssistantMessage('Noted.'),
-			async () => {
+			(_context, options) => {
 				started()
-				await held
-				return fauxAssistantMessage('', { stopReason: 'error', errorMessage: 'died' })
+				return new Promise((_resolve, reject) => {
+					options?.signal?.addEventListener('abort', () => reject(options.signal?.reason))
+				})
 			},
 			fauxAssistantMessage('- The cat is called Miso.')
 		])
@@ -507,13 +504,12 @@ describe('sections and memory notes', () => {
 		const renewed = first.newSession()
 		await noting
 		await first.close()
+		await renewed
 		const second = await openOn(path, undefined, world)
 
 		await vi.waitFor(async () => {
 			expect(await dailyOf(world, '2026-10-19')).toBe('- The cat is called Miso.\n')
 		})
-		release()
-		await renewed
 		await second.close()
 
 		// Taken once: a later open finds the marker and asks the model nothing.
@@ -521,6 +517,32 @@ describe('sections and memory notes', () => {
 		const third = await openOn(path, undefined, world)
 		await third.newSession()
 		expect(faux.state.callCount).toBe(calls)
+	})
+
+	it('stops a new session note when the ghost closes', async () => {
+		const world = volume(memStore())
+		let started!: () => void
+		const noting = new Promise<void>((resolve) => {
+			started = resolve
+		})
+		faux.setResponses([
+			fauxAssistantMessage('Noted.'),
+			(_context, options) => {
+				started()
+				return new Promise((_resolve, reject) => {
+					options?.signal?.addEventListener('abort', () => reject(options.signal?.reason))
+				})
+			}
+		])
+		const ghost = await openOn(':memory:', undefined, world)
+		await ghost.ask('My cat is called Miso.', { id: '1' })
+
+		const renewed = ghost.newSession()
+		await noting
+		await ghost.close()
+
+		await renewed
+		expect(await world.exists('/system/memory/daily/2026-10-19.test.md')).toBe(false)
 	})
 
 	it('appends notes to the daily file without repeating a paragraph', async () => {

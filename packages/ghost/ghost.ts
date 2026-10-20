@@ -122,10 +122,10 @@ async function open(deps: GhostDeps, env: ReturnType<typeof volumeEnv>): Promise
 	})
 	harness.resume()
 
-	// A process that died between a reset and its note left it untaken: take it once the
-	// conversation is idle. `close` cancels the wait.
-	const opening = withCancel(context)
-	const recovering = noteNewestReset(opening.context).catch(() => {})
+	// Note work runs one at a time under the ghost's lifetime; `close` cancels and awaits it.
+	// It starts with a reset whose note a process that died first left untaken.
+	const alive = withCancel(context)
+	let noting = noteNewestReset(alive.context).catch(() => {})
 
 	/**
 	 * Note the context the newest reset hid, unless a marker after it says that is done. Waits
@@ -184,11 +184,12 @@ async function open(deps: GhostDeps, env: ReturnType<typeof volumeEnv>): Promise
 		},
 		abort: () => root.abort(context),
 		async newSession(handoff) {
-			await recovering
+			await noting
 			await root.reset(handoff, context)
 			// Best effort, as before a compaction: the new session is already open, and a note
 			// that failed is taken again at the next open.
-			await noteNewestReset(context).catch(() => {})
+			noting = noting.then(() => noteNewestReset(alive.context).catch(() => {}))
+			await noting
 		},
 		watch(listener) {
 			listener(transcript.current())
@@ -196,8 +197,8 @@ async function open(deps: GhostDeps, env: ReturnType<typeof volumeEnv>): Promise
 			return () => listeners.delete(listener)
 		},
 		async close() {
-			opening.cancel()
-			await recovering
+			alive.cancel()
+			await noting
 			listeners.clear()
 			await stream.stop()
 			await harness.close(context)
