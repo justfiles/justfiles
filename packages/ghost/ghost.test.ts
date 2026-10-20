@@ -443,6 +443,44 @@ describe('sections and memory notes', () => {
 		])
 	})
 
+	it('notes the answer a new session waits for', async () => {
+		const world = volume(memStore())
+		const ghost = await openOn(':memory:', undefined, world)
+		let started!: () => void
+		const answering = new Promise<void>((resolve) => {
+			started = resolve
+		})
+		let release!: () => void
+		const held = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		let read = ''
+		faux.setResponses([
+			async () => {
+				started()
+				await held
+				return fauxAssistantMessage('The cat is called Miso.')
+			},
+			(context) => {
+				read = JSON.stringify(context.messages)
+				return fauxAssistantMessage('- The cat is called Miso.')
+			}
+		])
+
+		const asked = ghost.ask('What is my cat called?', { id: '1' })
+		await answering
+		const renewed = ghost.newSession('Fresh start.')
+		release()
+		await Promise.all([asked, renewed])
+
+		expect(read).toContain('What is my cat called?')
+		expect(read).toContain('The cat is called Miso.')
+		expect(await dailyOf(world, '2026-10-19')).toBe('- The cat is called Miso.\n')
+		expect(snapshotOf(ghost).transcript.entries).toMatchObject([
+			{ kind: 'reset', handoff: 'Fresh start.' }
+		])
+	})
+
 	it('appends notes to the daily file without repeating a paragraph', async () => {
 		const world = volume(memStore())
 		const ghost = await openOn(':memory:', undefined, world)

@@ -7,6 +7,7 @@ import {
 	createRegistry,
 	defineExtension,
 	defineTool,
+	type EntryId,
 	Harness,
 	hook,
 	type ToolRegistration,
@@ -119,6 +120,21 @@ async function open(deps: GhostDeps, env: ReturnType<typeof volumeEnv>): Promise
 	})
 	harness.resume()
 
+	/** The entry just before the newest reset: the end of the context it hid. */
+	async function beforeNewestReset(): Promise<EntryId | undefined> {
+		let reset = false
+		let cursor: Cursor | undefined
+		do {
+			const page = await root.entries({}, 50, cursor, context)
+			for (const entry of page.items) {
+				if (reset) return entry.id
+				reset = entry.kind === 'pi.reset'
+			}
+			cursor = page.next
+		} while (cursor !== undefined)
+		return undefined
+	}
+
 	return {
 		async ask(input, { id, whenBusy = 'queue', cwd }) {
 			const submission = await root.submit(
@@ -147,13 +163,18 @@ async function open(deps: GhostDeps, env: ReturnType<typeof volumeEnv>): Promise
 		},
 		abort: () => root.abort(context),
 		async newSession(handoff) {
-			const { messages } = await root.context(context)
+			// A reset waits for the running turn. Once idle it is placed, and the note covers
+			// exactly what it hid, including what that turn added after this call.
+			await root.reset(handoff, context)
+			await root.waitForIdle(context)
 			try {
+				const last = await beforeNewestReset()
+				if (last === undefined) return
+				const { messages } = await root.context(context, { at: last })
 				await notes.append(await notes.take(messages))
 			} catch {
-				// Best effort, as before a compaction: a new session must not wait on the model.
+				// Best effort, as before a compaction: the new session is already open.
 			}
-			await root.reset(handoff, context)
 		},
 		watch(listener) {
 			listener(transcript.current())
