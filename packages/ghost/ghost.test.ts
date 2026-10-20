@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -7,7 +8,7 @@ import {
 	fauxProvider,
 	fauxToolCall
 } from '@earendil-works/pi-ai'
-import { volume } from '@justfiles/fs'
+import { type Volume, volume } from '@justfiles/fs'
 import { memStore } from '@justfiles/fs/mem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { type Ghost, openGhost, type Tool, type TranscriptEvent } from './index.ts'
@@ -30,9 +31,13 @@ afterEach(async () => {
 	await rm(dir, { recursive: true, force: true })
 })
 
-async function openOn(path: string, tools?: Tool[]): Promise<Ghost> {
+async function openOn(
+	path: string,
+	tools?: Tool[],
+	world: Volume = volume(memStore())
+): Promise<Ghost> {
 	const ghost = await openGhost({
-		volume: volume(memStore()),
+		volume: world,
 		state: await openNodeSqliteState(path),
 		models,
 		shell: { id: 'test', name: 'Test', kind: 'test' },
@@ -47,6 +52,22 @@ function record(ghost: Ghost): TranscriptEvent[] {
 	const events: TranscriptEvent[] = []
 	ghost.watch((event) => events.push(event))
 	return events
+}
+
+const enc = (text: string) => new TextEncoder().encode(text)
+const dec = (bytes: Uint8Array) => new TextDecoder().decode(bytes)
+
+/** The model calls `name` with `args`, one tool round per call. */
+function calls(...rounds: [name: string, args: Parameters<typeof fauxToolCall>[1]][]) {
+	return rounds.map(([name, args]) =>
+		fauxAssistantMessage(fauxToolCall(name, args), { stopReason: 'toolUse' })
+	)
+}
+
+function toolResults(ghost: Ghost) {
+	return snapshotOf(ghost).transcript.entries.flatMap((entry) =>
+		entry.kind === 'tool' ? [entry] : []
+	)
 }
 
 function snapshotOf(ghost: Ghost) {
@@ -220,5 +241,124 @@ describe('openGhost', () => {
 			{ kind: 'user', text: 'What now?' },
 			{ kind: 'assistant', text: 'fresh' }
 		])
+	})
+})
+
+describe('the Volume is the world', () => {
+	it('writes and reads files in the Volume, not on disk', async () => {
+		const world = volume(memStore())
+		const ghost = await openOn(':memory:', undefined, world)
+		faux.setResponses([
+			...calls(
+				['write', { path: 'ghost-notes/a.md', content: 'hello volume' }],
+				['read', { path: 'ghost-notes/a.md' }]
+			),
+			fauxAssistantMessage('done')
+		])
+
+		await ghost.ask('Note it.', { id: 'w' })
+
+		expect(dec(await world.readFile('/ghost-notes/a.md'))).toBe('hello volume')
+		expect(toolResults(ghost)).toMatchObject([
+			{ name: 'write', isError: false },
+			{ name: 'read', isError: false, text: 'hello volume' }
+		])
+		expect(existsSync('ghost-notes')).toBe(false)
+		expect(existsSync('/ghost-notes')).toBe(false)
+	})
+
+	it('runs bash commands and pipelines over Volume files', async () => {
+		const world = volume(memStore())
+		await world.mkdir('/proj')
+		await world.writeFile('/proj/a.txt', enc('apple\nbanana\n'))
+		await world.writeFile('/proj/b.txt', enc('cherry\n'))
+		const ghost = await openOn(':memory:', undefined, world)
+		faux.setResponses([
+			...calls(
+				['bash', { command: 'ls' }],
+				['bash', { command: 'cat a.txt' }],
+				['bash', { command: 'rg -l cherry' }],
+				['bash', { command: 'grep -n banana a.txt' }],
+				['bash', { command: 'cat *.txt | grep -v apple | sort -r | head -n 1' }]
+			),
+			fauxAssistantMessage('done')
+		])
+
+		await ghost.ask('Look around.', { id: 'b', cwd: '/proj' })
+
+		expect(toolResults(ghost).map(({ text, isError }) => ({ text: text.trim(), isError }))).toEqual(
+			[
+				{ text: 'a.txt\nb.txt', isError: false },
+				{ text: 'apple\nbanana', isError: false },
+				{ text: 'b.txt', isError: false },
+				{ text: '2:banana', isError: false },
+				{ text: 'cherry', isError: false }
+			]
+		)
+	})
+
+	it('resolves relative paths against the cwd of each ask', async () => {
+		const world = volume(memStore())
+		const ghost = await openOn(':memory:', undefined, world)
+		faux.setResponses([
+			...calls(['write', { path: 'x.txt', content: 'A' }]),
+			fauxAssistantMessage('a done'),
+			...calls(['write', { path: 'x.txt', content: 'B' }], ['bash', { command: 'pwd; cat x.txt' }]),
+			fauxAssistantMessage('b done')
+		])
+
+		await ghost.ask('A', { id: 'a', cwd: '/a' })
+		await ghost.ask('B', { id: 'b', cwd: '/b' })
+
+		expect(dec(await world.readFile('/a/x.txt'))).toBe('A')
+		expect(dec(await world.readFile('/b/x.txt'))).toBe('B')
+		expect(toolResults(ghost).at(-1)?.text.trim()).toBe('/b\nB')
+	})
+
+	it('finishes a turn cut off after a write without writing again', async () => {
+		const path = join(dir, 'state.sqlite')
+		const world = volume(memStore())
+		let writes = 0
+		let written!: () => void
+		const landed = new Promise<void>((resolve) => {
+			written = resolve
+		})
+		let release!: () => void
+		const held = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		// The write lands, and the tool is held there until the ghost closes under it.
+		const dying = new Proxy(world, {
+			get(target, key) {
+				if (key !== 'writeFile') return Reflect.get(target, key)
+				return async (...args: Parameters<Volume['writeFile']>) => {
+					await target.writeFile(...args)
+					if (args[0] !== '/out.txt') return
+					writes++
+					written()
+					await held
+				}
+			}
+		})
+		faux.setResponses([
+			...calls(['write', { path: 'out.txt', content: 'once' }]),
+			fauxAssistantMessage('finished')
+		])
+
+		const first = await openOn(path, undefined, dying)
+		const cut = first.ask('Write it.', { id: 'turn' })
+		await landed
+		const closing = first.close()
+		release()
+		await closing
+		await expect(cut).rejects.toThrow()
+
+		const second = await openOn(path, undefined, dying)
+		const settled = await second.ask('Write it.', { id: 'turn' })
+
+		expect(settled).toEqual({ id: 'turn', status: 'done', text: 'finished' })
+		expect(writes).toBe(1)
+		expect(dec(await world.readFile('/out.txt'))).toBe('once')
+		expect(toolResults(second)).toMatchObject([{ name: 'write', isError: true }])
 	})
 })

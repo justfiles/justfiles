@@ -37,10 +37,7 @@ export function volumeEnv(volume: Volume): (cwd: string) => ExecutionEnv {
 	return (cwd) => {
 		const resolve = (path: string) => fs.resolvePath(cwd, path)
 		const lstatInfo = async (path: string) => toInfo(path, await fs.lstat(path))
-		const writeFile = async (path: string, content: string | Uint8Array) => {
-			await fs.mkdir(parentOf(path), { recursive: true })
-			await fs.writeFile(path, content)
-		}
+		const makeParent = (path: string) => fs.mkdir(parentOf(path), { recursive: true })
 
 		const env: ExecutionEnv = {
 			id,
@@ -76,10 +73,13 @@ export function volumeEnv(volume: Volume): (cwd: string) => ExecutionEnv {
 					return binaryReader(at, toInfo(at, stat), await fs.readFileBuffer(at))
 				}),
 			writeFile: (path, content, context) =>
-				attempt(context, resolve(path), (at) => writeFile(at, content)),
+				attempt(context, resolve(path), async (at) => {
+					await makeParent(at)
+					await fs.writeFile(at, content)
+				}),
 			appendFile: (path, content, context) =>
 				attempt(context, resolve(path), async (at) => {
-					await fs.mkdir(parentOf(at), { recursive: true })
+					await makeParent(at)
 					await fs.appendFile(at, content)
 				}),
 			truncateFile: (path, size, context) =>
@@ -190,26 +190,22 @@ export function volumeEnv(volume: Volume): (cwd: string) => ExecutionEnv {
 				if (!isDir)
 					return err(new ExecutionError('spawn_error', `Working directory does not exist: ${dir}`))
 				const argv = typeof command === 'string' ? undefined : command
-				if (argv?.[0] === undefined && typeof command !== 'string')
+				const program = argv?.[0]
+				if (argv !== undefined && program === undefined)
 					return err(new ExecutionError('spawn_error', 'Empty argv: no program to run'))
 
 				let result: Awaited<ReturnType<Bash['exec']>>
 				try {
-					result = await bash.exec(
-						argv === undefined ? (command as string) : quote(argv[0] as string),
-						{
-							cwd: dir,
-							env: options?.env,
-							replaceEnv: options?.inheritEnv === false,
-							signal,
-							...(argv === undefined ? {} : { args: argv.slice(1), rawScript: true })
-						}
-					)
+					result = await bash.exec(program === undefined ? (command as string) : quote(program), {
+						cwd: dir,
+						env: options?.env,
+						replaceEnv: options?.inheritEnv === false,
+						signal,
+						...(argv === undefined ? {} : { args: argv.slice(1) })
+					})
 				} catch (error) {
 					if (signal.aborted) return interrupted()
-					return err(
-						new ExecutionError('unknown', error instanceof Error ? error.message : String(error))
-					)
+					return err(new ExecutionError('unknown', messageOf(error)))
 				}
 				if (signal.aborted) return interrupted()
 				// just-bash reports a missing program as exit 127; argv names one program, so it never ran.
@@ -220,12 +216,7 @@ export function volumeEnv(volume: Volume): (cwd: string) => ExecutionEnv {
 					for (const stream of ['stdout', 'stderr'] as const)
 						if (result[stream] !== '') options?.onOutput?.(result[stream], context, { stream })
 				} catch (error) {
-					return err(
-						new ExecutionError(
-							'callback_error',
-							error instanceof Error ? error.message : String(error)
-						)
-					)
+					return err(new ExecutionError('callback_error', messageOf(error)))
 				}
 				return ok({ exitCode: result.exitCode })
 			},
@@ -267,6 +258,10 @@ function toFileError(error: unknown, path?: string): FileError {
 	const cause = error instanceof Error ? error : new Error(String(error))
 	const code = CODES[(cause as Error & { code?: string }).code ?? ''] ?? 'unknown'
 	return new FileError(code, cause.message, path, cause)
+}
+
+function messageOf(error: unknown): string {
+	return error instanceof Error ? error.message : String(error)
 }
 
 function toInfo(path: string, stat: FsStat): FileInfo {
@@ -349,9 +344,7 @@ function binaryReader(path: string, info: FileInfo, bytes: Uint8Array): BinaryRe
 				scanner.push(bytes)
 				return ok(scanner.finish())
 			} catch (error) {
-				return err(
-					new FileError('invalid', error instanceof Error ? error.message : String(error), path)
-				)
+				return err(new FileError('invalid', messageOf(error), path))
 			}
 		},
 		close: state.close

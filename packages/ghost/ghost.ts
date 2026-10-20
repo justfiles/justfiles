@@ -7,10 +7,19 @@ import {
 	defineExtension,
 	defineTool,
 	Harness,
+	type ToolRegistration,
 	type Tx,
 	watchEvents
 } from '@earendil-works/pi-durable'
+import type { ExecutionEnv } from '@earendil-works/pi-durable/env'
 import { SqliteStorage } from '@earendil-works/pi-durable/storage/sqlite'
+import {
+	createBashTool,
+	createEditTool,
+	createReadTool,
+	createWriteTool
+} from '@earendil-works/pi-durable/tools'
+import { volumeEnv } from './env.ts'
 import { classifyFailure } from './failure.ts'
 import { ASK, createTranscript, text } from './transcript.ts'
 import type { Ghost, GhostDeps, Tool, TranscriptEvent } from './types.ts'
@@ -20,7 +29,17 @@ const context = BACKGROUND_CONTEXT
 /** Open the ghost on `deps.state`, resuming whatever the last process left unfinished. */
 export async function openGhost(deps: GhostDeps): Promise<Ghost> {
 	const registry = createRegistry()
-	registry.install(defineExtension({ name: 'ghost', tools: (deps.tools ?? []).map(toPiTool) }))
+	const env = volumeEnv(deps.volume)
+	const volumeTools = [createReadTool(), createWriteTool(), createEditTool(), createBashTool()]
+	registry.install(
+		defineExtension({
+			name: 'ghost',
+			tools: [
+				...volumeTools.map((tool) => inAskedCwd(tool, env)),
+				...(deps.tools ?? []).map(toPiTool)
+			]
+		})
+	)
 	const compaction = deps.settings?.compaction
 	const harness = await Harness.open(
 		await SqliteStorage.open(deps.state),
@@ -106,6 +125,17 @@ async function askedCwd(tx: Tx, conversationId: ConversationId): Promise<string>
 		cursor = page.next
 	} while (cursor !== undefined)
 	return '/'
+}
+
+/** A pi tool given the Volume as its environment, at the cwd of the ask it answers. */
+function inAskedCwd<T extends ToolRegistration>(tool: T, env: (cwd: string) => ExecutionEnv): T {
+	return {
+		...tool,
+		async execute(args, api, context) {
+			const cwd = await api.commit((tx) => askedCwd(tx, api.conversationId), context)
+			return tool.execute(args, { ...api, env: env(cwd) }, context)
+		}
+	}
 }
 
 /** A ghost `Tool` as a pi tool. Not replay-safe: a call cut off by a restart reports so. */
