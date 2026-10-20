@@ -41,12 +41,13 @@ async function run(argv: string[]): Promise<number> {
 				cwd: cwd(),
 				...(values.steer ? { steer: true } : {})
 			}
-			const show = printer({ echo: false })
 			let failed = false
-			let printed = false
-			let ours = false
 			// The same id every time: the ghost answers it once, however often it is sent.
 			for (let attempt = 0; ; attempt++) {
+				// Per connection: what streamed before a reconnect may be a fragment of the answer.
+				const show = printer({ echo: false })
+				let printed = false
+				let ours = false
 				try {
 					await exchange(await connectOrStart(dir), request, (reply) => {
 						if (reply.type === 'snapshot') return false
@@ -65,13 +66,14 @@ async function run(argv: string[]): Promise<number> {
 							else if (ours) printed = show(reply) !== '' || printed
 						} else if (reply.status === 'failed')
 							console.error(`ghost: ${reply.failure.kind}: ${reply.failure.message}`)
-						// Nothing streamed, as after a reconnect: the answer is all there is to show.
+						// Nothing streamed on this connection, as after a reconnect: show the whole answer.
 						else if (!printed) process.stdout.write(`${reply.text}\n`)
 						return reply.type === 'settled' || reply.type === 'error'
 					})
 					return failed ? 1 : 0
 				} catch (error) {
 					if (!(error instanceof Lost) || attempt === RETRIES) throw error
+					if (printed && !values.json) process.stdout.write('\n')
 				}
 			}
 		}
