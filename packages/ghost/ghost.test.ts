@@ -11,7 +11,13 @@ import {
 import { type Volume, volume } from '@justfiles/fs'
 import { memStore } from '@justfiles/fs/mem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { type Ghost, openGhost, type Tool, type TranscriptEvent } from './index.ts'
+import {
+	type Ghost,
+	type GhostSettings,
+	openGhost,
+	type Tool,
+	type TranscriptEvent
+} from './index.ts'
 import { openNodeSqliteState } from './state/node-sqlite.ts'
 
 let dir: string
@@ -34,7 +40,8 @@ afterEach(async () => {
 async function openOn(
 	path: string,
 	tools?: Tool[],
-	world: Volume = volume(memStore())
+	world: Volume = volume(memStore()),
+	settings: GhostSettings = {}
 ): Promise<Ghost> {
 	const ghost = await openGhost({
 		volume: world,
@@ -42,7 +49,7 @@ async function openOn(
 		models,
 		shell: { id: 'test', name: 'Test', kind: 'test' },
 		tools,
-		settings: { model: { provider: 'faux', modelId: 'faux-1' } }
+		settings: { model: { provider: 'faux', modelId: 'faux-1' }, ...settings }
 	})
 	open.push(ghost)
 	return ghost
@@ -77,6 +84,37 @@ function snapshotOf(ghost: Ghost) {
 	})()
 	if (snapshot?.type !== 'snapshot') throw new Error('watch did not start with a snapshot')
 	return snapshot
+}
+
+async function put(world: Volume, path: string, text: string) {
+	await world.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true })
+	await world.writeFile(path, enc(text))
+}
+
+const today = () => new Date().toISOString().slice(0, 10)
+
+async function dailyOf(world: Volume, day: string) {
+	return dec(await world.readFile(`/system/memory/daily/${day}.test.md`))
+}
+
+/** A request's system prompt: every section in effect, in order. */
+function systemPrompt(context: { messages: readonly object[] }): string {
+	const sections: Record<string, string> = {}
+	for (const message of context.messages as { role: string; sections?: Record<string, string> }[])
+		if (message.role === 'system') Object.assign(sections, message.sections)
+	return Object.values(sections).join('\n\n')
+}
+
+/** Answer every request with 'ok', keeping its system prompt. */
+function capturePrompts(): string[] {
+	const prompts: string[] = []
+	faux.setResponses([
+		(context) => {
+			prompts.push(systemPrompt(context))
+			return fauxAssistantMessage('ok')
+		}
+	])
+	return prompts
 }
 
 describe('openGhost', () => {
@@ -217,11 +255,17 @@ describe('openGhost', () => {
 		])
 	})
 
-	it('starts a new session that opens with the handoff', async () => {
-		const ghost = await openOn(':memory:')
-		let seen: unknown[] = []
+	it('starts a new session that opens with the handoff, after a note on the old one', async () => {
+		const world = volume(memStore())
+		const ghost = await openOn(':memory:', undefined, world)
+		let read = ''
+		let seen: { role: string }[] = []
 		faux.setResponses([
 			fauxAssistantMessage('noted'),
+			(context) => {
+				read = JSON.stringify(context.messages)
+				return fauxAssistantMessage('- The secret is 42.')
+			},
 			(context) => {
 				seen = context.messages
 				return fauxAssistantMessage('fresh')
@@ -232,8 +276,10 @@ describe('openGhost', () => {
 		await ghost.newSession('We were talking about the weather.')
 		const settled = await ghost.ask('What now?', { id: 'new' })
 
+		expect(read).toContain('The secret is 42.')
+		expect(await dailyOf(world, today())).toBe('- The secret is 42.\n')
 		expect(settled).toMatchObject({ status: 'done', text: 'fresh' })
-		const sent = JSON.stringify(seen)
+		const sent = JSON.stringify(seen.filter((message) => message.role !== 'system'))
 		expect(sent).toContain('We were talking about the weather.')
 		expect(sent).not.toContain('The secret is 42.')
 		expect(snapshotOf(ghost).transcript.entries).toMatchObject([
@@ -241,6 +287,178 @@ describe('openGhost', () => {
 			{ kind: 'user', text: 'What now?' },
 			{ kind: 'assistant', text: 'fresh' }
 		])
+	})
+})
+
+describe('sections and memory notes', () => {
+	// 2026-10-20 01:00 in Auckland, still 2026-10-19 in UTC.
+	const NOW = new Date('2026-10-19T12:00:00Z')
+
+	beforeEach(() => {
+		vi.useFakeTimers({ toFake: ['Date'] })
+		vi.setSystemTime(NOW)
+	})
+
+	afterEach(() => {
+		vi.useRealTimers()
+	})
+
+	const noop: Tool = {
+		name: 'exec',
+		description: 'Run a process.',
+		parameters: { type: 'object', properties: {} },
+		execute: async () => ({ text: '' })
+	}
+
+	it('builds the system prompt from the Volume, in order', async () => {
+		const world = volume(memStore())
+		await put(world, '/system/agents/main/soul.md', 'You are Wisp, a quiet ghost.')
+		await put(world, '/system/user.md', 'Name: Ada')
+		await put(
+			world,
+			'/system/skills/brew/SKILL.md',
+			'---\nname: brew\ndescription: Brew tea.\n---\nSteep it.'
+		)
+		await put(world, '/system/memory/core.md', '- Ada drinks oolong.')
+		await put(world, '/system/memory/daily/2026-10-20.test.md', '- Ada is moving house.')
+		const ghost = await openOn(':memory:', [noop], world, { timeZone: 'Pacific/Auckland' })
+		const prompts = capturePrompts()
+
+		await ghost.ask('Hello', { id: 'h' })
+
+		const prompt = prompts[0] ?? ''
+		const order = [
+			'You are Wisp, a quiet ghost.',
+			'# your filesystem',
+			'`exec` reach this device itself',
+			'shell `Test` (id `test`, kind `test`)',
+			'# about the user\n\nName: Ada',
+			'# skills\n\n',
+			'- brew (`/system/skills/brew/SKILL.md`) — Brew tea.',
+			'# current time\n\nNow: 2026-10-20T01:00:00+13:00 (Pacific/Auckland).',
+			'# permanent memory\n\n- Ada drinks oolong.',
+			'# memories of the past 2 days\n\n',
+			'## 2026-10-20, shell test\n\n- Ada is moving house.',
+			'# expression'
+		]
+		for (const text of order) expect(prompt).toContain(text)
+		const at = order.map((text) => prompt.indexOf(text))
+		expect(at).toEqual([...at].sort((a, b) => a - b))
+		expect(prompt).not.toContain('Steep it.')
+		expect(prompt).not.toContain('You are Computer')
+	})
+
+	it('gives the built-in soul when none is written', async () => {
+		const ghost = await openOn(':memory:')
+		const prompts = capturePrompts()
+
+		await ghost.ask('Hello', { id: 'h' })
+
+		expect(prompts[0]).toMatch(/^---\nschema: frieren\/agent-soul\/v1\n[\s\S]*You are Computer/)
+		expect(prompts[0]).not.toContain('# about the user\n\n')
+		expect(prompts[0]).not.toContain('# permanent memory\n\n')
+		expect(prompts[0]).not.toContain('# memories of the past 2 days\n\n')
+	})
+
+	it("shows every shell's daily files for today and yesterday", async () => {
+		const world = volume(memStore())
+		await put(world, '/system/memory/daily/2026-10-18.laptop.md', '- Too old.')
+		await put(world, '/system/memory/daily/2026-10-19.laptop.md', '- Fixed the boiler.')
+		await put(world, '/system/memory/daily/2026-10-20.test.md', '- Today, here.')
+		const ghost = await openOn(':memory:', undefined, world, { timeZone: 'Pacific/Auckland' })
+		const prompts = capturePrompts()
+
+		await ghost.ask('What did I do yesterday?', { id: 'y' })
+
+		expect(prompts[0]).toContain(
+			'## 2026-10-19, shell laptop\n\n- Fixed the boiler.\n\n## 2026-10-20, shell test\n\n- Today, here.'
+		)
+		expect(prompts[0]).not.toContain('Too old.')
+	})
+
+	it('keeps the prompt byte-stable within a turn and reads it again at the next', async () => {
+		const world = volume(memStore())
+		const ghost = await openOn(':memory:', undefined, world)
+		const prompts: string[] = []
+		faux.setResponses([
+			(context) => {
+				prompts.push(systemPrompt(context))
+				vi.setSystemTime(new Date(NOW.getTime() + 60_000))
+				return fauxAssistantMessage(
+					fauxToolCall('write', { path: '/system/memory/core.md', content: '- Remembered.' }),
+					{ stopReason: 'toolUse' }
+				)
+			},
+			(context) => {
+				prompts.push(systemPrompt(context))
+				return fauxAssistantMessage('done')
+			},
+			(context) => {
+				prompts.push(systemPrompt(context))
+				return fauxAssistantMessage('again')
+			}
+		])
+
+		await ghost.ask('Remember it.', { id: '1' })
+		await ghost.ask('And now?', { id: '2' })
+
+		expect(prompts[1]).toBe(prompts[0])
+		expect(prompts[0]).toContain('Now: 2026-10-19T12:00:00Z (UTC).')
+		expect(prompts[0]).not.toContain('- Remembered.')
+		expect(prompts[2]).toContain('Now: 2026-10-19T12:01:00Z (UTC).')
+		expect(prompts[2]).toContain('# permanent memory\n\n- Remembered.')
+	})
+
+	it('notes what a compaction summarizes, and the next turn still answers', async () => {
+		const world = volume(memStore())
+		const ghost = await openOn(':memory:', undefined, world, {
+			compaction: {
+				reserveTokens: faux.getModel().contextWindow - 500,
+				keepRecentTokens: 1,
+				backgroundTokens: 0
+			}
+		})
+		let read = ''
+		faux.setResponses([
+			fauxAssistantMessage('Got it.'),
+			(context) => {
+				read = JSON.stringify(context.messages)
+				return fauxAssistantMessage('- The cat is called Miso.')
+			},
+			fauxAssistantMessage('The user has a cat.'),
+			fauxAssistantMessage('Miso.')
+		])
+
+		await ghost.ask('My cat is called Miso.', { id: '1' })
+		const settled = await ghost.ask('What is my cat called?', { id: '2' })
+
+		expect(settled).toEqual({ id: '2', status: 'done', text: 'Miso.' })
+		expect(read).toContain('My cat is called Miso.')
+		expect(read).not.toContain('What is my cat called?')
+		expect(await dailyOf(world, '2026-10-19')).toBe('- The cat is called Miso.\n')
+		expect(snapshotOf(ghost).transcript.entries).toMatchObject([
+			{ kind: 'compaction', summary: expect.stringContaining('The user has a cat.') },
+			{ kind: 'user', text: 'What is my cat called?' },
+			{ kind: 'assistant', text: 'Miso.' }
+		])
+	})
+
+	it('appends notes to the daily file without repeating a paragraph', async () => {
+		const world = volume(memStore())
+		const ghost = await openOn(':memory:', undefined, world)
+		faux.setResponses([
+			fauxAssistantMessage('one'),
+			fauxAssistantMessage('- A.\n\n- B.'),
+			fauxAssistantMessage('two'),
+			fauxAssistantMessage('- B.\n\n- C.')
+		])
+
+		await ghost.ask('first', { id: '1' })
+		await ghost.newSession()
+		await ghost.ask('second', { id: '2' })
+		await ghost.newSession()
+
+		expect(await dailyOf(world, '2026-10-19')).toBe('- A.\n\n- B.\n\n- C.\n')
 	})
 })
 

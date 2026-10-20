@@ -1,12 +1,14 @@
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import type { TSchema } from '@earendil-works/pi-ai'
 import {
+	CompactionTask,
 	type ConversationId,
 	type Cursor,
 	createRegistry,
 	defineExtension,
 	defineTool,
 	Harness,
+	hook,
 	type ToolRegistration,
 	type Tx,
 	watchEvents
@@ -21,10 +23,16 @@ import {
 } from '@earendil-works/pi-durable/tools'
 import { volumeEnv } from './env.ts'
 import { classifyFailure } from './failure.ts'
+import { createNotes } from './notes.ts'
+import { ghostSections } from './sections.ts'
+import { DEFAULT_TIMEZONE } from './timezone.ts'
 import { ASK, createTranscript, text } from './transcript.ts'
-import type { Ghost, GhostDeps, Tool, TranscriptEvent } from './types.ts'
+import type { Ghost, GhostDeps, GhostSettings, Tool, TranscriptEvent } from './types.ts'
 
 const context = BACKGROUND_CONTEXT
+
+/** The memo of a compaction's note, so a compaction rerun after a crash appends the same one. */
+const NOTE_MEMO = 'ghost.note'
 
 /** Open the ghost on `deps.state`, resuming whatever the last process left unfinished. */
 export async function openGhost(deps: GhostDeps): Promise<Ghost> {
@@ -36,6 +44,15 @@ export async function openGhost(deps: GhostDeps): Promise<Ghost> {
 }
 
 async function open(deps: GhostDeps, env: ReturnType<typeof volumeEnv>): Promise<Ghost> {
+	const model = deps.settings?.model
+	const timeZone = deps.settings?.timeZone ?? DEFAULT_TIMEZONE
+	const notes = createNotes({
+		volume: deps.volume,
+		models: deps.models,
+		model,
+		shellId: deps.shell.id,
+		timeZone
+	})
 	const registry = createRegistry()
 	const volumeTools = [createReadTool(), createWriteTool(), createEditTool(), createBashTool()]
 	registry.install(
@@ -44,21 +61,45 @@ async function open(deps: GhostDeps, env: ReturnType<typeof volumeEnv>): Promise
 			tools: [
 				...volumeTools.map((tool) => inAskedCwd(tool, env.at)),
 				...(deps.tools ?? []).map(toPiTool)
+			],
+			sections: ghostSections({
+				volume: deps.volume,
+				shell: deps.shell,
+				machineTools: (deps.tools ?? []).map((tool) => tool.name),
+				timeZone
+			}),
+			hooks: [
+				hook(CompactionTask, {
+					// Notes on the entries about to be summarized, then pi's own summary goes ahead.
+					async beforeCompact({ messages }, api, context) {
+						try {
+							const note =
+								(await api.memo<string>(NOTE_MEMO, context)) ??
+								(await api.memo(
+									NOTE_MEMO,
+									await notes.take(messages, context.abortSignal),
+									context
+								))
+							await notes.append(note)
+						} catch {
+							// A lost note must not fail the compaction, and with it the turn waiting on it.
+						}
+						return undefined
+					}
+				})
 			]
 		})
 	)
-	const compaction = deps.settings?.compaction
 	const harness = await Harness.open(
 		await SqliteStorage.open(deps.state),
 		{
 			models: deps.models,
 			registry,
-			settings: compaction === undefined ? {} : { compaction: { enabled: compaction } }
+			settings: { compaction: compactionPolicy(deps.settings?.compaction) }
 		},
 		context
 	)
 	const root = await harness.root(context)
-	const model = deps.settings?.model
 	if (model !== undefined) await root.configure({ model }, context)
 
 	// One pi stream feeds every watcher; each starts from the transcript's current snapshot.
@@ -105,7 +146,15 @@ async function open(deps: GhostDeps, env: ReturnType<typeof volumeEnv>): Promise
 			}
 		},
 		abort: () => root.abort(context),
-		newSession: (handoff) => root.reset(handoff, context),
+		async newSession(handoff) {
+			const { messages } = await root.context(context)
+			try {
+				await notes.append(await notes.take(messages))
+			} catch {
+				// Best effort, as before a compaction: a new session must not wait on the model.
+			}
+			await root.reset(handoff, context)
+		},
 		watch(listener) {
 			listener(transcript.current())
 			listeners.add(listener)
@@ -118,6 +167,11 @@ async function open(deps: GhostDeps, env: ReturnType<typeof volumeEnv>): Promise
 			await env.close()
 		}
 	}
+}
+
+function compactionPolicy(setting: GhostSettings['compaction']) {
+	if (setting === false) return { enabled: false }
+	return typeof setting === 'object' ? setting : {}
 }
 
 /**
