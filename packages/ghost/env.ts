@@ -13,6 +13,7 @@ import {
 	ok,
 	type Result,
 	type ShellExecResult,
+	type ShellSpillOptions,
 	type TextLine
 } from '@earendil-works/pi-durable/env'
 import type { Volume } from '@justfiles/fs'
@@ -24,17 +25,20 @@ const PRIVATE = ['/private']
 
 /**
  * pi-durable's `ExecutionEnv` over the Volume: the files are the Volume's, and the shell is
- * just-bash over the same files, so nothing reaches the real disk or starts a process. Returns
- * an environment per working directory. They share one file system id, so pi orders `edit` and
- * `write` calls on one file across them.
+ * just-bash over the same files, so nothing reaches the real disk or starts a process. `at`
+ * gives an environment per working directory. They share one file system id, so pi orders
+ * `edit` and `write` calls on one file across them. `close` stops watching the Volume.
  */
-export function volumeEnv(volume: Volume): (cwd: string) => ExecutionEnv {
+export function volumeEnv(volume: Volume): {
+	at(cwd: string): ExecutionEnv
+	close(): Promise<void>
+} {
 	// Both halves go through this one adapter, so `/private` is denied to both alike.
 	const fs = volumeFs(volume, PRIVATE)
 	const bash = new Bash({ fs, cwd: '/' })
 	const id = `volume:${crypto.randomUUID()}`
 
-	return (cwd) => {
+	const at = (cwd: string): ExecutionEnv => {
 		const resolve = (path: string) => fs.resolvePath(cwd, path)
 		const lstatInfo = async (path: string) => toInfo(path, await fs.lstat(path))
 		const makeParent = (path: string) => fs.mkdir(parentOf(path), { recursive: true })
@@ -218,13 +222,37 @@ export function volumeEnv(volume: Volume): (cwd: string) => ExecutionEnv {
 				} catch (error) {
 					return err(new ExecutionError('callback_error', messageOf(error)))
 				}
-				return ok({ exitCode: result.exitCode })
+				// Past the thresholds, the whole output also goes to a file the model can read back.
+				const output = result.stdout + result.stderr
+				if (options?.spill === undefined || !exceeds(output, options.spill))
+					return ok({ exitCode: result.exitCode })
+				const lost = (error: FileError): Result<ShellExecResult, ExecutionError> =>
+					err(
+						new ExecutionError(
+							'unknown',
+							`Failed to preserve complete shell output: ${error.message}`,
+							error
+						)
+					)
+				const file = await env.createTempFile({ prefix: 'pi-output-', suffix: '.log' }, context)
+				if (!file.ok) return lost(file.error)
+				const wrote = await env.writeFile(file.value, output, context)
+				if (!wrote.ok) return lost(wrote.error)
+				return ok({ exitCode: result.exitCode, spillPath: file.value })
 			},
 			// Nothing to stop: commands run in this process and end with their call.
 			async cleanup() {}
 		}
 		return env
 	}
+	return { at, close: () => fs.close() }
+}
+
+/** Whether `output` is past either spill threshold, counting a last unterminated line. */
+function exceeds(output: string, spill: ShellSpillOptions): boolean {
+	if (output === '') return false
+	const lines = output.split('\n').length - (output.endsWith('\n') ? 1 : 0)
+	return new TextEncoder().encode(output).length > spill.afterBytes || lines > spill.afterLines
 }
 
 /** Run `fn` on `path` as a pi `Result`: an abort before it starts, or its error as a `FileError`. */

@@ -28,14 +28,21 @@ const context = BACKGROUND_CONTEXT
 
 /** Open the ghost on `deps.state`, resuming whatever the last process left unfinished. */
 export async function openGhost(deps: GhostDeps): Promise<Ghost> {
-	const registry = createRegistry()
 	const env = volumeEnv(deps.volume)
+	return open(deps, env).catch(async (error) => {
+		await env.close()
+		throw error
+	})
+}
+
+async function open(deps: GhostDeps, env: ReturnType<typeof volumeEnv>): Promise<Ghost> {
+	const registry = createRegistry()
 	const volumeTools = [createReadTool(), createWriteTool(), createEditTool(), createBashTool()]
 	registry.install(
 		defineExtension({
 			name: 'ghost',
 			tools: [
-				...volumeTools.map((tool) => inAskedCwd(tool, env)),
+				...volumeTools.map((tool) => inAskedCwd(tool, env.at)),
 				...(deps.tools ?? []).map(toPiTool)
 			]
 		})
@@ -108,6 +115,7 @@ export async function openGhost(deps: GhostDeps): Promise<Ghost> {
 			listeners.clear()
 			await stream.stop()
 			await harness.close(context)
+			await env.close()
 		}
 	}
 }

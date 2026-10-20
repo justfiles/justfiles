@@ -180,6 +180,15 @@ describe('path helpers', () => {
 		expect(all).toContain('/p1')
 		expect(all).toContain('/pd')
 	})
+
+	test('close stops following the tree', async () => {
+		const { fs } = fresh()
+		await flush()
+		await fs.close()
+		await fs.writeFile('/late', '1')
+		await flush()
+		expect(fs.getAllPaths()).not.toContain('/late')
+	})
 })
 
 describe('drives a real Bash over the volume', () => {
@@ -273,5 +282,26 @@ describe('denied prefixes', () => {
 		await expect(fs.rm('/private/accounts', { recursive: true })).rejects.toMatchObject({
 			code: 'EACCES'
 		})
+	})
+
+	test('a symlink opens no way past the boundary', async () => {
+		const { bash, vol } = await denied()
+		for (const command of [
+			'ln -s / /alias; cat /alias/private/accounts/google.json',
+			'ln -s private /p; cat /p/accounts/google.json',
+			'ln -s accounts /private/a2; cat /private/a2/google.json',
+			'ls /alias/private',
+			'echo pwn > /alias/private/accounts/evil.json',
+			'ln -s private/accounts/new.json /dangling; echo pwn > /dangling'
+		]) {
+			// A refused redirect rejects the whole exec.
+			const result = await bash
+				.exec(command)
+				.catch((error: Error) => ({ stdout: '', stderr: error.message }))
+			expect(`${result.stdout}${result.stderr}`, command).not.toContain('SECRET')
+			expect(result.stdout, command).not.toContain('accounts')
+		}
+		expect(await vol.exists('/private/accounts/evil.json')).toBe(false)
+		expect(await vol.exists('/private/accounts/new.json')).toBe(false)
 	})
 })

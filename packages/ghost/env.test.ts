@@ -1,3 +1,5 @@
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
+import { getOrThrow } from '@earendil-works/pi-durable/env'
 import { registerEnvConformance } from '@earendil-works/pi-durable/testing'
 import { volume } from '@justfiles/fs'
 import { memStore } from '@justfiles/fs/mem'
@@ -25,6 +27,25 @@ registerEnvConformance(
 	async (use) => {
 		const vol = volume(memStore())
 		await vol.mkdir('/work')
-		await use(volumeEnv(vol)('/work'))
+		const env = volumeEnv(vol)
+		await use(env.at('/work'))
+		await env.close()
 	}
 )
+
+describe('volumeEnv exec', () => {
+	it('spills output past the thresholds to a Volume file', async () => {
+		const env = volumeEnv(volume(memStore()))
+		const shell = env.at('/')
+		const spill = { afterBytes: 1000, afterLines: 3 }
+
+		const short = getOrThrow(await shell.exec('seq 1 3', { spill }, BACKGROUND_CONTEXT))
+		const long = getOrThrow(await shell.exec('seq 1 5', { spill }, BACKGROUND_CONTEXT))
+
+		expect(short.spillPath).toBeUndefined()
+		const path = long.spillPath ?? ''
+		expect(path).toMatch(/^\/tmp\/.*pi-output-.*\.log$/)
+		expect(getOrThrow(await shell.readTextFile(path, BACKGROUND_CONTEXT))).toBe('1\n2\n3\n4\n5\n')
+		await env.close()
+	})
+})

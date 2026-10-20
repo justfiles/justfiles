@@ -25,18 +25,33 @@ import type { BufferEncoding, FileContent, FsStat, IFileSystem } from 'just-bash
  *
  * `deny` is a hard, uniform read boundary (the ghost denies `/private`): because every
  * command (cat, find, tar, sqlite3, jq…) reaches the Volume through this one object,
- * denying here cannot be routed around by a cleverer command line.
+ * denying here cannot be routed around by a cleverer command line. It checks the path as
+ * named and the path its symlinks lead to, so `ln -s / /alias` opens no way in either.
+ *
+ * `close` stops the watch behind the path snapshot.
  */
-export function volumeFs(vol: Volume, deny: readonly string[] = []): IFileSystem {
+export function volumeFs(
+	vol: Volume,
+	deny: readonly string[] = []
+): IFileSystem & { close(): Promise<void> } {
 	const denied = (p: string) => deny.some((d) => p === d || p.startsWith(`${d}/`))
 	const eacces = (p: string) =>
-		Promise.reject(Object.assign(new Error(`EACCES: permission denied, ${p}`), { code: 'EACCES' }))
-	const guard = <T>(p: string, run: () => Promise<T>) => (denied(p) ? eacces(p) : wrap(run()))
+		Object.assign(new Error(`EACCES: permission denied, ${p}`), { code: 'EACCES' })
+	/** Run `run` unless `p` is denied; `follow: false` for calls on a link itself, like rm. */
+	const guard = <T>(p: string, run: () => Promise<T>, follow = true) =>
+		wrap(
+			(async () => {
+				if (denied(p) || denied(await reached(p, follow))) throw eacces(p)
+				return run()
+			})()
+		)
 	// --- live path snapshot for synchronous getAllPaths (glob expansion) ---
 	let paths = new Set<string>(['/'])
 	let refreshing = false
 	let dirty = false
+	let closed = false
 	async function refresh(): Promise<void> {
+		if (closed) return
 		if (refreshing) {
 			dirty = true
 			return
@@ -56,7 +71,7 @@ export function volumeFs(vol: Volume, deny: readonly string[] = []): IFileSystem
 		}
 	}
 	void refresh()
-	void vol.watch(
+	const unwatch = vol.watch(
 		'/',
 		() => {
 			void refresh()
@@ -64,32 +79,29 @@ export function volumeFs(vol: Volume, deny: readonly string[] = []): IFileSystem
 		{ recursive: true }
 	)
 
-	async function realpath(input: string): Promise<string> {
-		const queue = input.split('/').filter((p) => p !== '')
-		let resolved = '/'
-		let depth = 0
-		while (queue.length > 0) {
-			const name = queue.shift() as string
-			if (name === '.') continue
-			if (name === '..') {
-				resolved = parentOf(resolved)
-				continue
-			}
-			const next = resolved === '/' ? `/${name}` : `${resolved}/${name}`
-			const st = await vol.lstat(next)
-			if (st.type === FileType.Symlink) {
-				if (++depth > 40) throw new Error('ELOOP: too many levels of symbolic links')
-				const target = await vol.readlink(next)
-				if (target.startsWith('/')) resolved = '/'
-				queue.unshift(...target.split('/').filter((p) => p !== ''))
-			} else {
-				resolved = next
-			}
-		}
+	/**
+	 * The path a Volume call on the normalised `p` lands on: every symlink on the way resolved,
+	 * the last one only with `follow`. Missing entries are kept as named, and so is a dangling
+	 * link's target, since a write through it creates that target.
+	 */
+	async function reached(p: string, follow = true, hops = 0): Promise<string> {
+		if (p === '/') return p
+		const parent = await reached(parentOf(p), true, hops)
+		const at = join(parent, p.slice(p.lastIndexOf('/') + 1))
+		if (!follow) return at
+		const st = await vol.lstat(at).catch(() => undefined)
+		if (st?.type !== FileType.Symlink) return at
+		if (hops >= 40) throw new Error('ELOOP: too many levels of symbolic links')
+		return reached(resolvePath(parent, await vol.readlink(at)), true, hops + 1)
+	}
+
+	async function realpath(p: string): Promise<string> {
+		const resolved = await reached(p)
+		await vol.lstat(resolved)
 		return resolved
 	}
 
-	const fs: IFileSystem = {
+	const fs = {
 		readFile: (path, options) =>
 			guard(path, () =>
 				vol.readFile(path).then((b) => Buffer.from(b).toString(readEncoding(options)))
@@ -100,41 +112,48 @@ export function volumeFs(vol: Volume, deny: readonly string[] = []): IFileSystem
 		appendFile: (path, content, options) =>
 			guard(path, () => vol.appendFile(path, toBytes(content, writeEncoding(options)))),
 		// `false`, not EACCES: `[ -e … ]` should read as absent, not error out.
-		exists: (path) => (denied(path) ? Promise.resolve(false) : vol.exists(path)),
+		exists: (path) => guard(path, () => vol.exists(path), false).catch(() => false),
 		stat: (path) => guard(path, () => vol.stat(path).then(toFsStat)),
-		lstat: (path) => guard(path, () => vol.lstat(path).then(toFsStat)),
+		lstat: (path) => guard(path, () => vol.lstat(path).then(toFsStat), false),
 		mkdir: (path, options) => guard(path, () => vol.mkdir(path, { recursive: options?.recursive })),
-		readdir: (path) =>
-			guard(path, () =>
-				vol.readdir(path).then((es) => es.map((e) => e.name).filter((n) => !denied(join(path, n))))
-			),
+		readdir: (path) => guard(path, () => entries(path).then((es) => es.map((e) => e.name))),
 		readdirWithFileTypes: (path) =>
-			guard(path, () =>
-				vol
-					.readdir(path)
-					.then((es) => es.filter((e) => !denied(join(path, e.name))).map(toDirentEntry))
-			),
+			guard(path, () => entries(path).then((es) => es.map(toDirentEntry))),
 		rm: (path, options) =>
-			guard(path, () => vol.rm(path, { recursive: options?.recursive, force: options?.force })),
+			guard(
+				path,
+				() => vol.rm(path, { recursive: options?.recursive, force: options?.force }),
+				false
+			),
 		cp: (src, dest, options) =>
-			denied(dest)
-				? eacces(dest)
-				: guard(src, () => vol.cp(src, dest, { recursive: options?.recursive })),
-		mv: (src, dest) => (denied(dest) ? eacces(dest) : guard(src, () => vol.rename(src, dest))),
+			guard(dest, () => guard(src, () => vol.cp(src, dest, { recursive: options?.recursive }))),
+		mv: (src, dest) => guard(dest, () => guard(src, () => vol.rename(src, dest), false), false),
 		resolvePath: (base, path) => resolvePath(base, path),
 		// Drives glob expansion — filter, or `ls /system/**` enumerates the secrets.
 		getAllPaths: () => Array.from(paths).filter((p) => !denied(p)),
 		chmod: (path, mode) => guard(path, () => vol.chmod(path, mode)),
 		symlink: (target, linkPath) =>
-			denied(target) ? eacces(target) : guard(linkPath, () => vol.symlink(target, linkPath)),
+			denied(target)
+				? Promise.reject(eacces(target))
+				: guard(linkPath, () => vol.symlink(target, linkPath), false),
 		link: () =>
 			Promise.reject(
 				Object.assign(new Error('ENOSYS: hard links are not supported'), { code: 'ENOSYS' })
 			),
-		readlink: (path) => guard(path, () => vol.readlink(path)),
+		readlink: (path) => guard(path, () => vol.readlink(path), false),
 		realpath: (path) => guard(path, () => realpath(path)),
 		utimes: (path, _atime, mtime) =>
-			guard(path, () => vol.utimes(path, BigInt(mtime.getTime()) * 1_000_000n))
+			guard(path, () => vol.utimes(path, BigInt(mtime.getTime()) * 1_000_000n)),
+		async close() {
+			closed = true
+			;(await unwatch)()
+		}
+	} satisfies IFileSystem & { close(): Promise<void> }
+
+	/** A directory's entries, less the denied ones, judged where the directory really is. */
+	async function entries(path: string): Promise<Dirent[]> {
+		const dir = await reached(path)
+		return (await vol.readdir(path)).filter((e) => !denied(join(dir, e.name)))
 	}
 	return fs
 }
