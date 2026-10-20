@@ -8,26 +8,27 @@ import { openGhost } from '@justfiles/ghost'
 import { openNodeSqliteState } from '@justfiles/ghost/state/node-sqlite'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { connect, exchange } from './client.ts'
-import { IDLE_MS, idle, serve } from './daemon.ts'
+import { idle, serve } from './daemon.ts'
 import { socketPath } from './paths.ts'
 import type { Reply, Request } from './protocol.ts'
 
 describe('idle', () => {
-	const now = 1_000_000_000
-
-	it('is idle with no client, nothing running and no wake', () => {
-		expect(idle(0, { busy: false }, now)).toBe(true)
+	it('is idle with no client and nothing running', () => {
+		expect(idle(0, { busy: false })).toBe(true)
+		expect(idle(0, { busy: false, consolidation: { from: '2026-10-20', running: false } })).toBe(
+			true
+		)
 	})
 
 	it('is not idle while a client is connected or an input is answered', () => {
-		expect(idle(1, { busy: false }, now)).toBe(false)
-		expect(idle(0, { busy: true }, now)).toBe(false)
+		expect(idle(1, { busy: false })).toBe(false)
+		expect(idle(0, { busy: true })).toBe(false)
 	})
 
-	it('is not idle when a wake is due within a few minutes', () => {
-		expect(idle(0, { busy: false, nextWakeAt: now + 60_000 }, now)).toBe(false)
-		expect(idle(0, { busy: false, nextWakeAt: now - 1 }, now)).toBe(false)
-		expect(idle(0, { busy: false, nextWakeAt: now + IDLE_MS + 60 * 60_000 }, now)).toBe(true)
+	it('is not idle while a consolidation runs', () => {
+		expect(idle(0, { busy: false, consolidation: { from: '2026-10-20', running: true } })).toBe(
+			false
+		)
 	})
 })
 
@@ -153,6 +154,27 @@ describe('serve', () => {
 		const socket = await connected(dir)
 		await exchange(socket, { type: 'login' }, (reply) => reply.type === 'auth')
 		await left
+		stop.abort()
+		await served
+	})
+
+	it('reports consolidation in status, and exits idle while it waits', async () => {
+		const stop = new AbortController()
+		let closed = false
+		const served = serve(await ghost(), socketPath(dir), {
+			idleMs: 20,
+			signal: stop.signal
+		}).then(() => {
+			closed = true
+		})
+
+		const status = await one(dir, { type: 'status' }, 'status')
+		await new Promise((resolve) => setTimeout(resolve, 100))
+
+		expect(status).toMatchObject({
+			status: { consolidation: { from: new Date().toISOString().slice(0, 10), running: false } }
+		})
+		expect(closed).toBe(true)
 		stop.abort()
 		await served
 	})

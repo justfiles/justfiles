@@ -14,6 +14,7 @@ export function createTranscript(snapshot: SnapshotEvent) {
 	// Of the partial's text, what listeners have been sent.
 	let sent: string
 	let status: GhostStatus
+	let consolidation: GhostStatus['consolidation']
 
 	function load(event: SnapshotEvent): void {
 		records = [...event.entries]
@@ -23,6 +24,7 @@ export function createTranscript(snapshot: SnapshotEvent) {
 		status = {
 			busy: event.run !== undefined,
 			queued: event.inbox.length,
+			...(consolidation === undefined ? {} : { consolidation }),
 			usage: total(event.usage)
 		}
 	}
@@ -116,8 +118,17 @@ export function createTranscript(snapshot: SnapshotEvent) {
 		return out
 	}
 
+	/** Set the consolidation's state, which pi's events do not carry; returns what listeners see of it. */
+	function consolidating(next: GhostStatus['consolidation']): TranscriptEvent[] {
+		if (next?.from === consolidation?.from && next?.running === consolidation?.running) return []
+		consolidation = next
+		const { busy, queued, usage } = status
+		status = { busy, queued, ...(next === undefined ? {} : { consolidation: next }), usage }
+		return [{ type: 'status', status }]
+	}
+
 	load(snapshot)
-	return { current, apply }
+	return { current, apply, consolidating }
 }
 
 /** Our record of one pi entry; undefined for bookkeeping the transcript does not show. */
