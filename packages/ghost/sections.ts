@@ -12,7 +12,11 @@ import {
 import { dayBefore, dayInTz, formatInTimezone } from './timezone.ts'
 import type { ShellRecord } from './types.ts'
 
-/** The system prompt, in order. Each key is one pi section, so a change resends only that one. */
+/**
+ * The system prompt, in order. Each key is one pi section, so a change resends only that one.
+ * The PRD's optional listing of other shells from file mtimes is left out until the agent is
+ * seen looking them up again and again; the map names their records and `transcript` reads them.
+ */
 const KEYS = [
 	'soul',
 	'filesystem',
@@ -126,7 +130,7 @@ async function skillsCatalogue(volume: Volume): Promise<string | undefined> {
 }
 
 /** A directory's entry names, sorted so the prompt is the same on every backend; none if missing. */
-async function names(volume: Volume, dir: string): Promise<string[]> {
+export async function names(volume: Volume, dir: string): Promise<string[]> {
 	try {
 		return (await volume.readdir(dir)).map((entry) => entry.name).sort()
 	} catch (error) {

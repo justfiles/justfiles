@@ -68,7 +68,9 @@ would only be re-reading your own context.
 - \`${paths.shellsDir()}/<shell>.json\` — each shell: its name, kind, capabilities and when
   it was last seen.
 - \`${paths.transcriptsDir()}/<shell>/YYYY-MM-DD.jsonl\` — each shell's conversation, one
-  entry per line, a file per day. Read only; never edit another shell's.
+  entry per line, a file per day, this shell's included. Read only; never edit them.
+  \`transcript\` searches and shows them as text: \`search\` across every shell, \`show\` for one
+  shell's day.
 
 When a question refers to something not in this conversation, look in these transcripts and
 the daily notes before saying you do not know; if nothing is found, ask.
