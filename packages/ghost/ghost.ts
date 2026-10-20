@@ -1,4 +1,4 @@
-import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
+import { BACKGROUND_CONTEXT, type Context, withCancel } from '@earendil-works/chord/context'
 import type { TSchema } from '@earendil-works/pi-ai'
 import {
 	CompactionTask,
@@ -34,6 +34,8 @@ const context = BACKGROUND_CONTEXT
 
 /** The memo of a compaction's note, so a compaction rerun after a crash appends the same one. */
 const NOTE_MEMO = 'ghost.note'
+/** The entry kind that marks a reset's note as taken; the model never sees it. */
+const NOTED = 'ghost.noted'
 
 /** Open the ghost on `deps.state`, resuming whatever the last process left unfinished. */
 export async function openGhost(deps: GhostDeps): Promise<Ghost> {
@@ -120,19 +122,38 @@ async function open(deps: GhostDeps, env: ReturnType<typeof volumeEnv>): Promise
 	})
 	harness.resume()
 
-	/** The entry just before the newest reset: the end of the context it hid. */
-	async function beforeNewestReset(): Promise<EntryId | undefined> {
-		let reset = false
+	// A process that died between a reset and its note left it untaken: take it once the
+	// conversation is idle. `close` cancels the wait.
+	const opening = withCancel(context)
+	const recovering = noteNewestReset(opening.context).catch(() => {})
+
+	/**
+	 * Note the context the newest reset hid, unless a marker after it says that is done. Waits
+	 * for idle first, since a reset waits for the running turn and is placed after it.
+	 */
+	async function noteNewestReset(context: Context): Promise<void> {
+		await root.waitForIdle(context)
+		let reset: EntryId | undefined
+		let last: EntryId | undefined
 		let cursor: Cursor | undefined
 		do {
 			const page = await root.entries({}, 50, cursor, context)
 			for (const entry of page.items) {
-				if (reset) return entry.id
-				reset = entry.kind === 'pi.reset'
+				if (reset !== undefined) {
+					last = entry.id
+					break
+				}
+				if (entry.kind === NOTED) return
+				if (entry.kind === 'pi.reset') reset = entry.id
 			}
-			cursor = page.next
+			cursor = last === undefined ? page.next : undefined
 		} while (cursor !== undefined)
-		return undefined
+		if (reset === undefined) return
+		if (last !== undefined) {
+			const { messages } = await root.context(context, { at: last })
+			await notes.append(await notes.take(messages, context.abortSignal))
+		}
+		await root.submit({ type: 'write', entry: { kind: NOTED, data: { reset } } }, context)
 	}
 
 	return {
@@ -163,18 +184,11 @@ async function open(deps: GhostDeps, env: ReturnType<typeof volumeEnv>): Promise
 		},
 		abort: () => root.abort(context),
 		async newSession(handoff) {
-			// A reset waits for the running turn. Once idle it is placed, and the note covers
-			// exactly what it hid, including what that turn added after this call.
+			await recovering
 			await root.reset(handoff, context)
-			await root.waitForIdle(context)
-			try {
-				const last = await beforeNewestReset()
-				if (last === undefined) return
-				const { messages } = await root.context(context, { at: last })
-				await notes.append(await notes.take(messages))
-			} catch {
-				// Best effort, as before a compaction: the new session is already open.
-			}
+			// Best effort, as before a compaction: the new session is already open, and a note
+			// that failed is taken again at the next open.
+			await noteNewestReset(context).catch(() => {})
 		},
 		watch(listener) {
 			listener(transcript.current())
@@ -182,6 +196,8 @@ async function open(deps: GhostDeps, env: ReturnType<typeof volumeEnv>): Promise
 			return () => listeners.delete(listener)
 		},
 		async close() {
+			opening.cancel()
+			await recovering
 			listeners.clear()
 			await stream.stop()
 			await harness.close(context)

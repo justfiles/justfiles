@@ -481,6 +481,48 @@ describe('sections and memory notes', () => {
 		])
 	})
 
+	it('takes a new session note at the next open when the process died before it', async () => {
+		const path = join(dir, 'state.sqlite')
+		const world = volume(memStore())
+		let started!: () => void
+		const noting = new Promise<void>((resolve) => {
+			started = resolve
+		})
+		let release!: () => void
+		const held = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		faux.setResponses([
+			fauxAssistantMessage('Noted.'),
+			async () => {
+				started()
+				await held
+				return fauxAssistantMessage('', { stopReason: 'error', errorMessage: 'died' })
+			},
+			fauxAssistantMessage('- The cat is called Miso.')
+		])
+		const first = await openOn(path, undefined, world)
+		await first.ask('My cat is called Miso.', { id: '1' })
+
+		const renewed = first.newSession()
+		await noting
+		await first.close()
+		const second = await openOn(path, undefined, world)
+
+		await vi.waitFor(async () => {
+			expect(await dailyOf(world, '2026-10-19')).toBe('- The cat is called Miso.\n')
+		})
+		release()
+		await renewed
+		await second.close()
+
+		// Taken once: a later open finds the marker and asks the model nothing.
+		const calls = faux.state.callCount
+		const third = await openOn(path, undefined, world)
+		await third.newSession()
+		expect(faux.state.callCount).toBe(calls)
+	})
+
 	it('appends notes to the daily file without repeating a paragraph', async () => {
 		const world = volume(memStore())
 		const ghost = await openOn(':memory:', undefined, world)
