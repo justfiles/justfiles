@@ -28,8 +28,12 @@ export interface ShellRecord {
 export interface GhostSettings {
 	/** Without one, every ask fails. */
 	model?: { provider: string; modelId: string }
-	/** Automatic compaction; on unless `false`. */
-	compaction?: boolean
+	/** Names the day of the daily notes and the time in the prompt. Default `UTC`. */
+	timeZone?: string
+	/** Automatic compaction; on unless `false`. An object tunes its thresholds, in tokens. */
+	compaction?:
+		| boolean
+		| { reserveTokens?: number; keepRecentTokens?: number; backgroundTokens?: number }
 }
 
 export type SqlValue = null | number | bigint | string | Uint8Array
@@ -73,7 +77,10 @@ export interface Ghost {
 		opts: { id: string; whenBusy?: 'queue' | 'steer'; cwd?: string }
 	): Promise<Settled>
 	abort(): Promise<void>
-	/** Start a new context; the model no longer sees older entries. `handoff` opens it. */
+	/**
+	 * Start a new context; the model no longer sees older entries. Notes on the old one go to
+	 * the daily file first, and `handoff` opens the new one.
+	 */
 	newSession(handoff?: string): Promise<void>
 	/** The listener gets a snapshot first, then every change. Returns the unsubscribe. */
 	watch(listener: (event: TranscriptEvent) => void): () => void

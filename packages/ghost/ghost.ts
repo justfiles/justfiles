@@ -1,12 +1,15 @@
-import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
+import { BACKGROUND_CONTEXT, type Context, withCancel } from '@earendil-works/chord/context'
 import type { TSchema } from '@earendil-works/pi-ai'
 import {
+	CompactionTask,
 	type ConversationId,
 	type Cursor,
 	createRegistry,
 	defineExtension,
 	defineTool,
+	type EntryId,
 	Harness,
+	hook,
 	type ToolRegistration,
 	type Tx,
 	watchEvents
@@ -21,10 +24,18 @@ import {
 } from '@earendil-works/pi-durable/tools'
 import { volumeEnv } from './env.ts'
 import { classifyFailure } from './failure.ts'
+import { createNotes } from './notes.ts'
+import { ghostSections } from './sections.ts'
+import { DEFAULT_TIMEZONE } from './timezone.ts'
 import { ASK, createTranscript, text } from './transcript.ts'
-import type { Ghost, GhostDeps, Tool, TranscriptEvent } from './types.ts'
+import type { Ghost, GhostDeps, GhostSettings, Tool, TranscriptEvent } from './types.ts'
 
 const context = BACKGROUND_CONTEXT
+
+/** The memo of a compaction's note, so a compaction rerun after a crash appends the same one. */
+const NOTE_MEMO = 'ghost.note'
+/** The entry kind that marks a reset's note as taken; the model never sees it. */
+const NOTED = 'ghost.noted'
 
 /** Open the ghost on `deps.state`, resuming whatever the last process left unfinished. */
 export async function openGhost(deps: GhostDeps): Promise<Ghost> {
@@ -36,6 +47,15 @@ export async function openGhost(deps: GhostDeps): Promise<Ghost> {
 }
 
 async function open(deps: GhostDeps, env: ReturnType<typeof volumeEnv>): Promise<Ghost> {
+	const model = deps.settings?.model
+	const timeZone = deps.settings?.timeZone ?? DEFAULT_TIMEZONE
+	const notes = createNotes({
+		volume: deps.volume,
+		models: deps.models,
+		model,
+		shellId: deps.shell.id,
+		timeZone
+	})
 	const registry = createRegistry()
 	const volumeTools = [createReadTool(), createWriteTool(), createEditTool(), createBashTool()]
 	registry.install(
@@ -44,21 +64,45 @@ async function open(deps: GhostDeps, env: ReturnType<typeof volumeEnv>): Promise
 			tools: [
 				...volumeTools.map((tool) => inAskedCwd(tool, env.at)),
 				...(deps.tools ?? []).map(toPiTool)
+			],
+			sections: ghostSections({
+				volume: deps.volume,
+				shell: deps.shell,
+				machineTools: (deps.tools ?? []).map((tool) => tool.name),
+				timeZone
+			}),
+			hooks: [
+				hook(CompactionTask, {
+					// Notes on the entries about to be summarized, then pi's own summary goes ahead.
+					async beforeCompact({ messages }, api, context) {
+						try {
+							const note =
+								(await api.memo<string>(NOTE_MEMO, context)) ??
+								(await api.memo(
+									NOTE_MEMO,
+									await notes.take(messages, context.abortSignal),
+									context
+								))
+							await notes.append(note)
+						} catch {
+							// A lost note must not fail the compaction, and with it the turn waiting on it.
+						}
+						return undefined
+					}
+				})
 			]
 		})
 	)
-	const compaction = deps.settings?.compaction
 	const harness = await Harness.open(
 		await SqliteStorage.open(deps.state),
 		{
 			models: deps.models,
 			registry,
-			settings: compaction === undefined ? {} : { compaction: { enabled: compaction } }
+			settings: { compaction: compactionPolicy(deps.settings?.compaction) }
 		},
 		context
 	)
 	const root = await harness.root(context)
-	const model = deps.settings?.model
 	if (model !== undefined) await root.configure({ model }, context)
 
 	// One pi stream feeds every watcher; each starts from the transcript's current snapshot.
@@ -77,6 +121,40 @@ async function open(deps: GhostDeps, env: ReturnType<typeof volumeEnv>): Promise
 			}
 	})
 	harness.resume()
+
+	// Note work runs one at a time under the ghost's lifetime; `close` cancels and awaits it.
+	// It starts with a reset whose note a process that died first left untaken.
+	const alive = withCancel(context)
+	let noting = noteNewestReset(alive.context).catch(() => {})
+
+	/**
+	 * Note the context the newest reset hid, unless a marker after it says that is done. Waits
+	 * for idle first, since a reset waits for the running turn and is placed after it.
+	 */
+	async function noteNewestReset(context: Context): Promise<void> {
+		await root.waitForIdle(context)
+		let reset: EntryId | undefined
+		let last: EntryId | undefined
+		let cursor: Cursor | undefined
+		do {
+			const page = await root.entries({}, 50, cursor, context)
+			for (const entry of page.items) {
+				if (reset !== undefined) {
+					last = entry.id
+					break
+				}
+				if (entry.kind === NOTED) return
+				if (entry.kind === 'pi.reset') reset = entry.id
+			}
+			cursor = last === undefined ? page.next : undefined
+		} while (cursor !== undefined)
+		if (reset === undefined) return
+		if (last !== undefined) {
+			const { messages } = await root.context(context, { at: last })
+			await notes.append(await notes.take(messages, context.abortSignal))
+		}
+		await root.submit({ type: 'write', entry: { kind: NOTED, data: { reset } } }, context)
+	}
 
 	return {
 		async ask(input, { id, whenBusy = 'queue', cwd }) {
@@ -105,19 +183,33 @@ async function open(deps: GhostDeps, env: ReturnType<typeof volumeEnv>): Promise
 			}
 		},
 		abort: () => root.abort(context),
-		newSession: (handoff) => root.reset(handoff, context),
+		async newSession(handoff) {
+			await noting
+			await root.reset(handoff, context)
+			// Best effort, as before a compaction: the new session is already open, and a note
+			// that failed is taken again at the next open.
+			noting = noting.then(() => noteNewestReset(alive.context).catch(() => {}))
+			await noting
+		},
 		watch(listener) {
 			listener(transcript.current())
 			listeners.add(listener)
 			return () => listeners.delete(listener)
 		},
 		async close() {
+			alive.cancel()
+			await noting
 			listeners.clear()
 			await stream.stop()
 			await harness.close(context)
 			await env.close()
 		}
 	}
+}
+
+function compactionPolicy(setting: GhostSettings['compaction']) {
+	if (setting === false) return { enabled: false }
+	return typeof setting === 'object' ? setting : {}
 }
 
 /**
