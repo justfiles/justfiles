@@ -34,8 +34,8 @@ export interface GhostSettings {
 	/** Names the day of the daily notes and the time in the prompt. Default `UTC`. */
 	timeZone?: string
 	/**
-	 * Nightly consolidation of every shell's daily notes into core.md, at 04:00 in `timeZone`;
-	 * on unless `false`. One shell per Volume has it on.
+	 * Consolidation of every shell's daily notes into core.md, once a day in `timeZone` after
+	 * an ask; on unless `false`. One shell per Volume has it on.
 	 */
 	consolidate?: boolean
 	/** Automatic compaction; on unless `false`. An object tunes its thresholds, in tokens. */
@@ -132,10 +132,10 @@ export interface GhostStatus {
 	/** Inputs waiting for the current one. */
 	queued: number
 	/**
-	 * When the ghost next wakes on its own, in epoch ms; absent when nothing is scheduled, and
-	 * in the past while that work runs. The host keeps running for it.
+	 * The daily consolidation, absent when off: `from` is the first day whose notes are not in
+	 * core.md yet, and `running` says a run is going, which the host keeps running for.
 	 */
-	nextWakeAt?: number
+	consolidation?: { from: string; running: boolean }
 	usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number }
 }
 

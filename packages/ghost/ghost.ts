@@ -23,7 +23,12 @@ import {
 	createReadTool,
 	createWriteTool
 } from '@earendil-works/pi-durable/tools'
-import { armConsolidation, consolidationFrom, consolidationTask } from './consolidation.ts'
+import {
+	armConsolidation,
+	type ConsolidationState,
+	consolidationFrom,
+	consolidationTask
+} from './consolidation.ts'
 import { volumeEnv } from './env.ts'
 import { classifyFailure } from './failure.ts'
 import { createMirror, writeShellRecord } from './mirror.ts'
@@ -98,7 +103,7 @@ export async function openRotating(deps: GhostDeps, maxBytes: number): Promise<G
 			prefix: prefixOf(generation),
 			from: carried.from,
 			idsBefore: carried.idsBefore ?? 0,
-			afterNight: check
+			afterRun: check
 		})
 	try {
 		const stored = await currentGeneration(db)
@@ -232,7 +237,7 @@ interface GenerationOptions {
 	from: string | undefined
 	/** Entry ids the generations before this one used, which the mirror's ids go on from. */
 	idsBefore: number
-	afterNight(): void
+	afterRun(): void
 }
 
 /** The ghost on one generation of its state. */
@@ -259,14 +264,30 @@ async function open(
 		timeZone
 	})
 	// Set once the transcript exists; the task cannot run before the harness resumes.
-	let wake: (at: number) => void = () => {}
+	let consolidating: (state: ConsolidationState) => void = () => {}
+	// Consolidation waiting for the conversation to go idle after an ask.
+	const idleWaiters = new Set<() => void>()
 	const consolidation = consolidationTask({
 		volume: deps.volume,
 		models: deps.models,
 		model,
 		timeZone,
-		onWake: (at) => wake(at),
-		afterNight: opts.afterNight
+		idle: (signal) =>
+			new Promise((resolve, reject) => {
+				const stop = () => {
+					idleWaiters.delete(done)
+					reject(signal.reason)
+				}
+				const done = () => {
+					signal.removeEventListener('abort', stop)
+					resolve()
+				}
+				if (signal.aborted) return reject(signal.reason)
+				idleWaiters.add(done)
+				signal.addEventListener('abort', stop, { once: true })
+			}),
+		onState: (state) => consolidating(state),
+		afterRun: opts.afterRun
 	})
 	const registry = createRegistry()
 	const volumeTools = [createReadTool(), createWriteTool(), createEditTool(), createBashTool()]
@@ -379,7 +400,7 @@ async function open(
 		}
 		emit(changes)
 	})
-	transcript.wake(
+	transcript.consolidating(
 		await armConsolidation(
 			harness,
 			root,
@@ -388,7 +409,7 @@ async function open(
 			context
 		)
 	)
-	wake = (at) => emit(transcript.wake(at))
+	consolidating = (state) => emit(transcript.consolidating(state))
 	harness.resume()
 	void mirror.sync()
 
@@ -440,6 +461,14 @@ async function open(
 				context
 			)
 			const record = await submission.wait(context)
+			// Once nothing more is queued, consolidation may run without holding up an answer.
+			void root.waitForIdle(alive.context).then(
+				() => {
+					for (const done of idleWaiters) done()
+					idleWaiters.clear()
+				},
+				() => {}
+			)
 			return root.commit((tx) => settledOf(tx, id, record), context)
 		},
 		abort: () => root.abort(context),

@@ -7,13 +7,12 @@ import { asRequest, decoder, encode, type Reply, type Request } from './protocol
 /** How long the daemon stays up with nothing to do. */
 export const IDLE_MS = 5 * 60_000
 
-/**
- * May the daemon exit: no client connected, no input being answered, and no wake pending.
- * Nothing starts the daemon for a wake, so one that is pending keeps it up, however far off:
- * the consolidating shell's daemon stays up from one night to the next.
- */
-export function idle(clients: number, status: Pick<GhostStatus, 'busy' | 'nextWakeAt'>): boolean {
-	return clients === 0 && !status.busy && status.nextWakeAt === undefined
+/** May the daemon exit: no client connected, no input being answered, no consolidation running. */
+export function idle(
+	clients: number,
+	status: Pick<GhostStatus, 'busy' | 'consolidation'>
+): boolean {
+	return clients === 0 && !status.busy && status.consolidation?.running !== true
 }
 
 /**

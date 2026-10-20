@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { createModels, fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai'
 import { volume } from '@justfiles/fs'
 import { memStore } from '@justfiles/fs/mem'
-import { type GhostSettings, type GhostStatus, openGhost } from '@justfiles/ghost'
+import { openGhost } from '@justfiles/ghost'
 import { openNodeSqliteState } from '@justfiles/ghost/state/node-sqlite'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { connect, exchange } from './client.ts'
@@ -13,8 +13,11 @@ import { socketPath } from './paths.ts'
 import type { Reply, Request } from './protocol.ts'
 
 describe('idle', () => {
-	it('is idle with no client, nothing running and no wake', () => {
+	it('is idle with no client and nothing running', () => {
 		expect(idle(0, { busy: false })).toBe(true)
+		expect(idle(0, { busy: false, consolidation: { from: '2026-10-20', running: false } })).toBe(
+			true
+		)
 	})
 
 	it('is not idle while a client is connected or an input is answered', () => {
@@ -22,9 +25,10 @@ describe('idle', () => {
 		expect(idle(0, { busy: true })).toBe(false)
 	})
 
-	it('is not idle while a wake is pending, however far off', () => {
-		expect(idle(0, { busy: false, nextWakeAt: Date.now() + 20 * 60 * 60_000 })).toBe(false)
-		expect(idle(0, { busy: false, nextWakeAt: Date.now() - 1 })).toBe(false)
+	it('is not idle while a consolidation runs', () => {
+		expect(idle(0, { busy: false, consolidation: { from: '2026-10-20', running: true } })).toBe(
+			false
+		)
 	})
 })
 
@@ -41,8 +45,7 @@ describe('serve', () => {
 		await rm(dir, { recursive: true, force: true })
 	})
 
-	/** A ghost on a shell that does not consolidate, so nothing wakes it. */
-	async function ghost(settings: GhostSettings = { consolidate: false }) {
+	async function ghost() {
 		const models = createModels()
 		models.setProvider(faux.provider)
 		return openGhost({
@@ -50,7 +53,7 @@ describe('serve', () => {
 			state: await openNodeSqliteState(':memory:'),
 			models,
 			shell: { id: 'test', name: 'Test', kind: 'test' },
-			settings: { model: { provider: 'faux', modelId: 'faux-1' }, ...settings }
+			settings: { model: { provider: 'faux', modelId: 'faux-1' } }
 		})
 	}
 
@@ -155,10 +158,10 @@ describe('serve', () => {
 		await served
 	})
 
-	it('stays up for the next wake and reports it in status', async () => {
+	it('reports consolidation in status, and exits idle while it waits', async () => {
 		const stop = new AbortController()
 		let closed = false
-		const served = serve(await ghost({}), socketPath(dir), {
+		const served = serve(await ghost(), socketPath(dir), {
 			idleMs: 20,
 			signal: stop.signal
 		}).then(() => {
@@ -168,11 +171,10 @@ describe('serve', () => {
 		const status = await one(dir, { type: 'status' }, 'status')
 		await new Promise((resolve) => setTimeout(resolve, 100))
 
-		expect(status).toMatchObject({ status: { nextWakeAt: expect.any(Number) } })
-		expect(new Date((status as { status: GhostStatus }).status.nextWakeAt ?? 0).getUTCHours()).toBe(
-			4
-		)
-		expect(closed).toBe(false)
+		expect(status).toMatchObject({
+			status: { consolidation: { from: new Date().toISOString().slice(0, 10), running: false } }
+		})
+		expect(closed).toBe(true)
 		stop.abort()
 		await served
 	})
