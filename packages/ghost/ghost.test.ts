@@ -85,6 +85,64 @@ describe('openGhost', () => {
 		expect(text.join('')).toBe('Paris')
 	})
 
+	it('keeps a throwing watcher from stopping the others', async () => {
+		const ghost = await openOn(':memory:')
+		ghost.watch((event) => {
+			if (event.type !== 'snapshot') throw new Error('bad watcher')
+		})
+		const events = record(ghost)
+		faux.setResponses([fauxAssistantMessage('one'), fauxAssistantMessage('two')])
+
+		await ghost.ask('first', { id: '1' })
+		await ghost.ask('second', { id: '2' })
+
+		await vi.waitFor(() => {
+			const answers = events.flatMap((event) =>
+				event.type === 'entry' && event.entry.kind === 'assistant' ? [event.entry.text] : []
+			)
+			expect(answers).toEqual(['one', 'two'])
+		})
+	})
+
+	it('runs tools in the directory of the ask they answer', async () => {
+		const cwds: string[] = []
+		const where: Tool = {
+			name: 'where',
+			description: 'Say the working directory.',
+			parameters: { type: 'object', properties: {} },
+			execute: async (_params, { cwd }) => {
+				cwds.push(cwd)
+				return { text: cwd }
+			}
+		}
+		const ghost = await openOn(':memory:', [where])
+		let release!: () => void
+		const queued = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		faux.setResponses([
+			async () => {
+				await queued
+				return fauxAssistantMessage(fauxToolCall('where', {}), { stopReason: 'toolUse' })
+			},
+			fauxAssistantMessage('a done'),
+			fauxAssistantMessage(fauxToolCall('where', {}), { stopReason: 'toolUse' }),
+			fauxAssistantMessage('b done'),
+			fauxAssistantMessage(fauxToolCall('where', {}), { stopReason: 'toolUse' }),
+			fauxAssistantMessage('c done')
+		])
+		ghost.watch((event) => {
+			if (event.type === 'status' && event.status.queued > 0) release()
+		})
+
+		const a = ghost.ask('A', { id: 'a', cwd: '/a' })
+		const b = ghost.ask('B', { id: 'b', cwd: '/b' })
+		await Promise.all([a, b])
+		await ghost.ask('C', { id: 'c' })
+
+		expect(cwds).toEqual(['/a', '/b', '/'])
+	})
+
 	it('does not submit twice for the same id', async () => {
 		const ghost = await openOn(':memory:')
 		faux.setResponses([fauxAssistantMessage('once')])

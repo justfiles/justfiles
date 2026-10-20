@@ -1,6 +1,9 @@
 import type { AgentEvent, EntryRecord, SnapshotEvent, UsageState } from '@earendil-works/pi-durable'
 import type { GhostStatus, Transcript, TranscriptEntry, TranscriptEvent } from './types.ts'
 
+/** The entry kind of an ask: a user message whose data holds the asking client's cwd. */
+export const ASK = 'ghost.ask'
+
 type Content = readonly { type: string; text?: string }[] | string
 
 /** One conversation's transcript and status, kept current from pi's agent events. */
@@ -122,7 +125,7 @@ function toEntry(record: EntryRecord): TranscriptEntry | undefined {
 	const message = record.model?.[0]
 	const id = record.id
 	switch (record.kind) {
-		case 'pi.user':
+		case ASK:
 			return message?.role === 'user'
 				? { id, kind: 'user', text: text(message.content) }
 				: undefined
