@@ -23,7 +23,9 @@
 ;;
 ;; `ghost-define-command' defines commands that use the model as a function,
 ;; through `ghost quick': one completion outside the conversation, with the
-;; command's prompt as the system prompt, answered in the echo area.
+;; command's prompt as the system prompt.  The answer is echoed, and kept in
+;; `*ghost quick*', which `ghost-quick-show' shows; a long one shows there
+;; at once.
 
 ;;; Code:
 
@@ -135,6 +137,12 @@ answer; use it for a system notification."
 
 (defvar ghost--last-answer nil
   "The text of the newest answer, for `ghost-copy-answer'.")
+
+(defvar ghost--quick-answer nil
+  "The text of the newest quick answer, for `ghost-quick-copy'.")
+
+(defvar ghost--quick-entry 1
+  "In `*ghost quick*', where the newest entry starts.")
 
 ;;;; Asking
 
@@ -399,7 +407,7 @@ TO-GHOST, an ask to the ghost that joins PROMPT and the text."
     (if to-ghost
         (ghost--ask (ghost--join prompt text) default-directory 'ask)
       (message "ghost: thinking…")
-      (ghost--quick text prompt (lambda (answer) (message "%s" answer))
+      (ghost--quick text prompt (lambda (answer) (ghost--quick-answer text answer))
                     model effort))))
 
 (defun ghost--quick (text system callback &optional model effort)
@@ -437,6 +445,89 @@ along when set."
     (message "ghost: %s" (alist-get 'message (ghost--parse line))))
    ((not (string-prefix-p "{" line))
     (process-put proc 'ghost-stderr (string-remove-prefix "ghost: " line)))))
+
+;;;; The quick log
+
+(defvar-keymap ghost-quick-mode-map
+  :parent special-mode-map
+  "y" #'ghost-quick-copy)
+
+(define-derived-mode ghost-quick-mode special-mode "Ghost-Quick"
+  "The log of quick asks: each one's text and answer, newest at the end.
+\\{ghost-quick-mode-map}"
+  (visual-line-mode 1))
+
+(defvar-keymap ghost-quick-echo-map
+  :doc "Keys live right after a quick answer is echoed; others pass through."
+  "M-RET" #'ghost-quick-show
+  "M-w" #'ghost-quick-copy)
+
+(defun ghost--quick-answer (text answer)
+  "Log TEXT and ANSWER in `*ghost quick*'; echo ANSWER, or show a long one there.
+After an echo, `ghost-quick-echo-map' is live for one key."
+  (setq ghost--quick-answer answer)
+  (with-current-buffer (ghost--quick-buffer)
+    (let ((inhibit-read-only t))
+      (goto-char (point-max))
+      (unless (bobp) (insert "\n"))
+      (setq ghost--quick-entry (point))
+      (ghost--label nil "you" nil)
+      (ghost--text text)
+      (ghost--label nil "ghost" nil)
+      (ghost--text answer)))
+  (if (ghost--fits-echo-p answer)
+      (progn (message "%s" answer)
+             (set-transient-map ghost-quick-echo-map))
+    (ghost--quick-display)))
+
+(defun ghost--fits-echo-p (text)
+  "Non-nil when TEXT fits the echo area, as `display-message-or-buffer' judges it."
+  (let ((lines (with-temp-buffer
+                 (insert text)
+                 (count-screen-lines (point-min) (point-max) nil
+                                     (minibuffer-window))))
+        (height (cond ((not resize-mini-windows) 1)
+                      ((floatp max-mini-window-height)
+                       (* (frame-height) max-mini-window-height))
+                      ((integerp max-mini-window-height) max-mini-window-height)
+                      (t 1))))
+    (<= lines (max 1 height))))
+
+(defun ghost--quick-buffer ()
+  "The `*ghost quick*' buffer, made when there is none."
+  (or (get-buffer "*ghost quick*")
+      (with-current-buffer (get-buffer-create "*ghost quick*")
+        (ghost-quick-mode)
+        (setq ghost--quick-entry 1)
+        (current-buffer))))
+
+(defun ghost--quick-display ()
+  "Show `*ghost quick*' with its newest entry at the top of the window.
+`display-buffer-alist' decides where it shows."
+  (let* ((buffer (ghost--quick-buffer))
+         (window (display-buffer buffer))
+         (start (with-current-buffer buffer
+                  (min ghost--quick-entry (point-max)))))
+    (when window
+      (set-window-start window start)
+      (set-window-point window start))))
+
+;;;###autoload
+(defun ghost-quick-show ()
+  "Show `*ghost quick*', the log of quick asks, or hide it when it shows."
+  (interactive)
+  (let ((windows (and (get-buffer "*ghost quick*")
+                      (get-buffer-window-list "*ghost quick*" nil t))))
+    (if windows
+        (dolist (window windows) (quit-window nil window))
+      (ghost--quick-display))))
+
+(defun ghost-quick-copy ()
+  "Copy the newest quick answer."
+  (interactive)
+  (unless ghost--quick-answer (user-error "No quick answer yet"))
+  (kill-new ghost--quick-answer)
+  (message "Copied the quick answer"))
 
 ;;;; Composing
 
