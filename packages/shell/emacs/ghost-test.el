@@ -277,6 +277,40 @@
      (should (memq 'font-lock-keyword-face
                    (ensure-list (get-text-property (1- (point)) 'face)))))))
 
+(ert-deftest ghost-test-fits-tables-to-the-window-and-leaves-prose-unfilled ()
+  (ghost-test--with-transcript
+   (with-current-buffer (ghost--buffer)
+     (let* ((prose (concat "A paragraph that stays on one line at any width, "
+                           "for visual-line-mode to wrap."))
+            (html (concat "<p>" prose "</p>"
+                          "<table><tr><td>aaaa aaaa aaaa aaaa</td>"
+                          "<td>bbbb bbbb bbbb bbbb</td></tr></table>"))
+            (ghost-window-size 30)
+            (narrow (ghost--shr html))
+            (wide (let ((ghost-window-size 100)) (ghost--shr html))))
+       ;; Hidden, `*ghost*' draws for the sidebar it will show in.
+       (should (= (ghost--shr-width) 28))
+       (should (string-prefix-p (concat prose "\n") narrow))
+       (should (string-match-p "aaaa aaaa  bbbb bbbb" wide))
+       (should-not (string-match-p "aaaa aaaa aaaa aaaa" narrow))
+       (should (> (length (split-string narrow "\n")) 3))))))
+
+(ert-deftest ghost-test-shows-the-transcript-on-its-side ()
+  (ghost-test--with-transcript
+   (let ((ghost-window-side 'right))
+     (ghost--show)
+     (let ((window (get-buffer-window "*ghost*")))
+       (should (eq (window-parameter window 'window-side) 'right))
+       (should (window-parameter window 'no-delete-other-windows))
+       (delete-other-windows (frame-first-window))
+       (should (window-live-p window))
+       (delete-window window)))
+   (let ((ghost-window-side 'bottom))
+     (ghost--show)
+     (let ((window (get-buffer-window "*ghost*")))
+       (should (eq (window-parameter window 'window-side) 'bottom))
+       (delete-window window)))))
+
 (ert-deftest ghost-test-draws-code-only-in-a-mode-auto-mode-alist-names ()
   (should (eq (ghost--lang-mode "Python") 'python-mode))
   (should (eq (ghost--lang-mode "sh") 'sh-mode))

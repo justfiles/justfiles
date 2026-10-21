@@ -60,8 +60,15 @@ The watch is a client and keeps the daemon up; once it ends, the daemon
 exits after its own idle period, and the next ask starts both again."
   :type 'number)
 
-(defcustom ghost-window-height 0.3
-  "Height of the `*ghost*' side window."
+(defcustom ghost-window-side 'right
+  "The side of the frame `*ghost*' shows on, as a sidebar or at the bottom.
+An entry for it in `display-buffer-alist' takes precedence."
+  :type '(choice (const right) (const left) (const bottom)))
+
+(defcustom ghost-window-size 0.35
+  "The size of the `*ghost*' side window, as a fraction of the frame.
+Its width as a sidebar, its height at the bottom; a whole number is
+columns or lines instead."
   :type 'number)
 
 (defcustom ghost-quick-model nil
@@ -781,14 +788,20 @@ The next watch starts with a snapshot, which draws a new `*ghost*'."
         (current-buffer))))
 
 (defun ghost--show ()
-  "Show `*ghost*' in the bottom side window, without selecting it."
+  "Show `*ghost*' in its side window, without selecting it.
+The window stays through `delete-other-windows', as a sidebar does."
   (let ((buffer (ghost--buffer)))
     (unless (get-buffer-window buffer t)
       (display-buffer buffer
                       `((display-buffer-reuse-window
                          display-buffer-in-side-window)
-                        (side . bottom)
-                        (window-height . ,ghost-window-height))))
+                        (side . ,ghost-window-side)
+                        (,(if (eq ghost-window-side 'bottom)
+                              'window-height
+                            'window-width)
+                         . ,ghost-window-size)
+                        (window-parameters
+                         . ((no-delete-other-windows . t))))))
     (ghost--seen)))
 
 (defun ghost--header-line ()
@@ -1108,8 +1121,8 @@ paragraph starts on a line of its own."
 ;;;; Markdown
 
 ;; The CLI turns an answer's Markdown into HTML, with micromark; shr draws it,
-;; laying tables out in pixels.  An answer being written shows as it comes,
-;; and `ghost-copy-answer' copies the Markdown.
+;; laying tables out in pixels, as wide as the window.  An answer being
+;; written shows as it comes, and `ghost-copy-answer' copies the Markdown.
 
 ;; New in Emacs 30.
 (defvar shr-fill-text)
@@ -1121,23 +1134,46 @@ paragraph starts on a line of its own."
   (and ghost-render-markdown (libxml-available-p)))
 
 (defun ghost--shr (html)
-  "HTML drawn by shr, without the blank lines around it."
-  (with-temp-buffer
-    (insert html)
-    (let ((dom (libxml-parse-html-region (point-min) (point-max)))
-          ;; In the default font, as the asks and labels are, not shr's
-          ;; variable-pitch one; tables still line up, at `:align-to'.
-          (shr-use-fonts nil)
-          ;; Unfilled, for `visual-line-mode' to wrap at any width.
-          (shr-fill-text nil)
-          ;; An image as its alt text: shr would fetch it into this buffer,
-          ;; gone by the time it arrives.
-          (shr-inhibit-images t)
-          (shr-external-rendering-functions
-           (cons '(pre . ghost--shr-pre) shr-external-rendering-functions)))
-      (erase-buffer)
-      (shr-insert-document dom))
-    (string-trim (buffer-string) "\n+" "\n+")))
+  "HTML drawn by shr as wide as this buffer's window, trimmed of blank lines."
+  (let ((width (ghost--shr-width)))
+    (with-temp-buffer
+      (insert html)
+      (let ((dom (libxml-parse-html-region (point-min) (point-max)))
+            ;; In the default font, as the asks and labels are, not shr's
+            ;; variable-pitch one; tables still line up, at `:align-to'.
+            (shr-use-fonts nil)
+            ;; Tables and rules are laid out to this; shr would take the
+            ;; selected window's width, which is not the sidebar's.
+            (shr-width width)
+            ;; Unfilled, for `visual-line-mode' to wrap at any width.
+            (shr-fill-text nil)
+            ;; An image as its alt text: shr would fetch it into this buffer,
+            ;; gone by the time it arrives.
+            (shr-inhibit-images t)
+            (shr-external-rendering-functions
+             (append '((pre . ghost--shr-pre) (table . ghost--shr-table))
+                     shr-external-rendering-functions)))
+        (erase-buffer)
+        (shr-insert-document dom))
+      (string-trim (buffer-string) "\n+" "\n+"))))
+
+(defun ghost--shr-width ()
+  "The columns shr draws in: the body of this buffer's window, less the margin.
+A hidden `*ghost*' takes the width its side window will have, so what is
+drawn meanwhile fits it; another hidden buffer takes the selected window's."
+  (let ((window (get-buffer-window nil t)))
+    (- (cond (window (window-body-width window))
+             ((not (equal (buffer-name) "*ghost*")) (window-body-width))
+             ((eq ghost-window-side 'bottom) (frame-width))
+             ((integerp ghost-window-size) ghost-window-size)
+             (t (round (* ghost-window-size (frame-width)))))
+       2)))
+
+(defun ghost--shr-table (dom)
+  "Draw the table DOM with its cells filled to their columns.
+A cell left to `visual-line-mode' wraps at the window's edge, which
+breaks the table's lines up."
+  (let ((shr-fill-text t)) (shr-tag-table dom)))
 
 (defun ghost--shr-pre (dom)
   "Draw the code block DOM in the faces of its language, else as shr does."
