@@ -3,6 +3,7 @@ import { createServer, type Socket } from 'node:net'
 import type { AuthEvent } from '@earendil-works/pi-ai'
 import type { Ghost, GhostStatus } from '@justfiles/ghost'
 import { asRequest, decoder, encode, type Reply, type Request } from './protocol.ts'
+import type { Quick } from './quick.ts'
 
 /** How long the daemon stays up with nothing to do. */
 export const IDLE_MS = 5 * 60_000
@@ -33,7 +34,7 @@ export type Login = (
 export async function serve(
 	ghost: Ghost,
 	path: string,
-	opts: { idleMs?: number; signal?: AbortSignal; login?: Login } = {}
+	opts: { idleMs?: number; signal?: AbortSignal; login?: Login; quick?: Quick } = {}
 ): Promise<void> {
 	const idleMs = opts.idleMs ?? IDLE_MS
 	const clients = new Set<Socket>()
@@ -63,6 +64,11 @@ export async function serve(
 				const { id, text, cwd, steer } = request
 				const settled = await ghost.ask(text, { id, cwd, whenBusy: steer ? 'steer' : 'queue' })
 				return send({ type: 'settled', ...settled })
+			}
+			case 'quick': {
+				if (opts.quick === undefined) throw new Error('quick is not available')
+				const text = await opts.quick(request, left)
+				return send({ type: 'quick', text })
 			}
 			case 'abort':
 				await ghost.abort()

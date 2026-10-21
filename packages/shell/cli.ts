@@ -2,16 +2,17 @@ import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { realpathSync } from 'node:fs'
 import { parseArgs } from 'node:util'
-import type { AuthEvent } from '@earendil-works/pi-ai'
+import type { AuthEvent, ThinkingLevel } from '@earendil-works/pi-ai'
 import type { TranscriptEntry } from '@justfiles/ghost'
 import { connectOrStart, exchange, Lost } from './client.ts'
 import { main } from './main.ts'
 import { shellDir, volumeCwd } from './paths.ts'
-import type { Reply } from './protocol.ts'
+import { type Reply, THINKING_LEVELS } from './protocol.ts'
 import { readSettings, volumeRoot } from './settings.ts'
 
 const USAGE = `usage:
   ghost ask "<text>" [--steer] [--json]
+  ghost quick "<text>" [--system <text>] [--model <id>] [--effort <level>] [--json]
   ghost watch [--json]
   ghost new [--handoff <text>]
   ghost abort
@@ -30,6 +31,9 @@ async function run(argv: string[]): Promise<number> {
 		options: {
 			json: { type: 'boolean' },
 			steer: { type: 'boolean' },
+			system: { type: 'string' },
+			model: { type: 'string' },
+			effort: { type: 'string' },
 			handoff: { type: 'string' },
 			device: { type: 'boolean' }
 		}
@@ -84,6 +88,32 @@ async function run(argv: string[]): Promise<number> {
 					if (printed && !values.json) process.stdout.write('\n')
 				}
 			}
+		}
+		case 'quick': {
+			const text = positionals.join(' ')
+			const effort = values.effort as ThinkingLevel | undefined
+			if (text === '') break
+			if (effort !== undefined && !THINKING_LEVELS.includes(effort)) {
+				console.error(`ghost: --effort is one of ${THINKING_LEVELS.join(', ')}`)
+				return 2
+			}
+			const request = {
+				type: 'quick' as const,
+				text,
+				...(values.system === undefined ? {} : { system: values.system }),
+				...(values.model === undefined ? {} : { model: values.model }),
+				...(effort === undefined ? {} : { effort })
+			}
+			let failed = false
+			await exchange(await connectOrStart(dir), request, (reply) => {
+				if (reply.type !== 'quick' && reply.type !== 'error') return false
+				if (reply.type === 'error') failed = true
+				if (values.json) json(reply)
+				else if (reply.type === 'quick') process.stdout.write(`${reply.text}\n`)
+				else console.error(`ghost: ${reply.message}`)
+				return true
+			})
+			return failed ? 1 : 0
 		}
 		case 'watch': {
 			const show = values.json ? json : printer({ echo: true })

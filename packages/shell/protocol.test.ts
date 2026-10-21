@@ -34,9 +34,11 @@ describe('framing', () => {
 })
 
 describe('asRequest', () => {
-	it('accepts the five requests', () => {
+	it('accepts the six requests', () => {
 		for (const request of [
 			{ type: 'ask', id: 'a', text: 'hi', cwd: '/notes', steer: true },
+			{ type: 'quick', text: 'hi', system: 'Explain.', model: 'gpt-6', effort: 'low' },
+			{ type: 'quick', text: 'hi' },
 			{ type: 'abort' },
 			{ type: 'new', handoff: 'carry on' },
 			{ type: 'status' },
@@ -51,6 +53,9 @@ describe('asRequest', () => {
 			'ask',
 			{ type: 'ask', id: 'a', text: 'hi' },
 			{ type: 'ask', id: 1, text: 'hi', cwd: '/' },
+			{ type: 'quick' },
+			{ type: 'quick', text: 'hi', effort: 'lots' },
+			{ type: 'quick', text: 'hi', model: 1 },
 			{ type: 'new', handoff: 3 },
 			{ type: 'login', device: 'yes' },
 			{ type: 'logout' }
