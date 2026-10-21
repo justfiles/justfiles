@@ -19,6 +19,7 @@ import { shellDir, socketPath } from './paths.ts'
 import { createQuick } from './quick.ts'
 import { readSettings, volumeRoot } from './settings.ts'
 import { bashTool } from './tools/bash.ts'
+import { loadCustomTools, withCustomTools } from './tools/custom.ts'
 import { emacsTool } from './tools/emacs.ts'
 import { openTool } from './tools/open.ts'
 
@@ -61,11 +62,11 @@ export async function main(): Promise<void> {
 			state: await openNodeSqliteState(join(dir, 'state.sqlite')),
 			models,
 			shell,
-			tools: [
-				bashTool({ root, denied: await realpath(privateRoot) }),
-				emacsTool(root),
-				openTool(root)
-			],
+			// The user's own tools, from `tools/` beside settings.json, take the place of these by name.
+			tools: withCustomTools(
+				[bashTool({ root, denied: await realpath(privateRoot) }), emacsTool(root), openTool(root)],
+				await loadCustomTools(join(dir, 'tools'), { root })
+			),
 			settings: { model: { provider, modelId }, consolidate }
 		})
 		const login: Login = async (device, notify, signal) => {
