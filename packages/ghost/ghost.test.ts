@@ -1798,6 +1798,19 @@ describe('a new session each day', () => {
 		expect(faux.state.callCount).toBe(3)
 	})
 
+	it('answers a retried ask from its record without opening the day', async () => {
+		const ghost = await openOn(':memory:')
+		faux.setResponses([fauxAssistantMessage('one')])
+		const first = await ghost.ask('First.', { id: '1' })
+
+		vi.setSystemTime(new Date('2026-10-20T04:00:00Z'))
+		const again = await ghost.ask('First.', { id: '1' })
+
+		expect(again).toEqual(first)
+		expect(kinds(ghost)).toEqual(['user', 'assistant'])
+		expect(faux.state.callCount).toBe(1)
+	})
+
 	it('keeps one session across days with the boundary off', async () => {
 		const ghost = await openOn(':memory:', undefined, undefined, { dayBoundary: false })
 		faux.setResponses([

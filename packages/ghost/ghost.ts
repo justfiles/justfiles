@@ -502,8 +502,10 @@ async function open(
 
 	return {
 		async ask(input, { id, whenBusy = 'queue', cwd }) {
-			// A steer belongs to the run it interrupts; a queued ask may open the day first.
-			if (whenBusy !== 'steer') await renewDay()
+			// A retry answers from its record, and a steer belongs to the run it interrupts;
+			// a new queued ask may open the day first.
+			const known = await root.commit((tx) => tx.submissionByRequest(root.id, id), context)
+			if (known === undefined && whenBusy !== 'steer') await renewDay()
 			const submission = await root.submit(
 				{
 					type: 'input',
