@@ -1130,6 +1130,9 @@ paragraph starts on a line of its own."
           (shr-use-fonts nil)
           ;; Unfilled, for `visual-line-mode' to wrap at any width.
           (shr-fill-text nil)
+          ;; An image as its alt text: shr would fetch it into this buffer,
+          ;; gone by the time it arrives.
+          (shr-inhibit-images t)
           (shr-external-rendering-functions
            (cons '(pre . ghost--shr-pre) shr-external-rendering-functions)))
       (erase-buffer)

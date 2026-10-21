@@ -287,6 +287,13 @@
                  "x"))
   (should-not (bound-and-true-p global-auto-revert-mode)))
 
+(ert-deftest ghost-test-draws-an-image-as-its-alt-text ()
+  (cl-letf (((symbol-function 'url-queue-retrieve)
+             (lambda (&rest _) (ert-fail "fetched the image"))))
+    (should (equal (ghost--shr
+                    "<p><img src=\"https://example.com/a.png\" alt=\"photo\"></p>")
+                   "photo"))))
+
 (ert-deftest ghost-test-keeps-a-paragraph-answer-on-its-label-line ()
   (ghost-test--with-transcript
    (ghost--event
