@@ -1,8 +1,10 @@
+import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { promisify } from 'node:util'
 import { type AuthPrompt, createModels, type Models } from '@earendil-works/pi-ai'
 import { registerBunOAuthFlows } from '@earendil-works/pi-ai/bun-oauth'
 import { openaiProvider } from '@earendil-works/pi-ai/providers/openai'
@@ -13,7 +15,11 @@ import { openGhost, type ShellRecord } from '@justfiles/ghost'
 import { openNodeSqliteState } from '@justfiles/ghost/state/node-sqlite'
 import { volumeCredentials } from './credentials.ts'
 import { type Login, serve } from './daemon.ts'
-import { filesRoot, shellDir, socketPath } from './paths.ts'
+import { shellDir, socketPath } from './paths.ts'
+import { readSettings, volumeRoot } from './settings.ts'
+import { bashTool } from './tools/bash.ts'
+import { emacsTool } from './tools/emacs.ts'
+import { openTool } from './tools/open.ts'
 
 // pi-ai loads its sign-in flows from files beside its own, which the bundle does not have;
 // these imports put them in it.
@@ -26,12 +32,14 @@ export async function main(): Promise<void> {
 	const release = lock(join(dir, 'lock'))
 	if (release === undefined) return
 	try {
+		const path = await loginPath()
+		if (path !== undefined) process.env.PATH = path
 		const shell = await shellRecord(join(dir, 'shell.json'))
-		const { model: modelId = DEFAULT_MODEL } =
-			(await readJson<Settings>(join(dir, 'settings.json'))) ?? {}
+		const settings = readSettings(dir)
+		const { model: modelId = DEFAULT_MODEL, consolidate } = settings
 		// The credentials live in the Volume's private mount, which the ghost's Volume leaves
 		// unbound: the agent's files never include them.
-		const privateRoot = join(filesRoot(), 'private')
+		const privateRoot = join(volumeRoot(settings), 'private')
 		await mkdir(privateRoot, { recursive: true, mode: 0o700 })
 		const models = createModels({
 			credentials: volumeCredentials(volume(fsStore(privateRoot)), '/ghost/credentials.json')
@@ -45,12 +53,19 @@ export async function main(): Promise<void> {
 				`${provider} has no model ${modelId}; settings.json can name ${offered.join(', ')}`
 			)
 		}
+		// Resolved, so that `bash` sees the same paths `pwd` prints.
+		const root = await realpath(volumeRoot(settings))
 		const ghost = await openGhost({
-			volume: volume(fsStore(filesRoot(), { mounts: ['private'] })),
+			volume: volume(fsStore(root, { mounts: ['private'] })),
 			state: await openNodeSqliteState(join(dir, 'state.sqlite')),
 			models,
 			shell,
-			settings: { model: { provider, modelId } }
+			tools: [
+				bashTool({ root, denied: await realpath(privateRoot) }),
+				emacsTool(root),
+				openTool(root)
+			],
+			settings: { model: { provider, modelId }, consolidate }
 		})
 		const login: Login = async (device, notify, signal) => {
 			await models.login(
@@ -76,9 +91,22 @@ export async function main(): Promise<void> {
  */
 const DEFAULT_MODEL = 'gpt-6.1-sol'
 
-interface Settings {
-	/** A model id on the provider in use; every one is on `openai`. */
-	model?: string
+/**
+ * The PATH of the user's login shell, so the machine tools find the user's programs. The
+ * daemon has the environment of whichever client started it, which may be Emacs with a short
+ * PATH. Read once at start, never per call; undefined when the shell does not answer.
+ */
+async function loginPath(): Promise<string | undefined> {
+	try {
+		const { stdout } = await promisify(execFile)(
+			process.env.SHELL || '/bin/sh',
+			['-l', '-c', 'printf "\\n%s" "$PATH"'],
+			{ timeout: 10_000 }
+		)
+		// The last line: a login script may print before it.
+		const path = stdout.slice(stdout.lastIndexOf('\n') + 1)
+		if (path !== '') return path
+	} catch {}
 }
 
 /**

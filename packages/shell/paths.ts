@@ -1,11 +1,12 @@
 import { homedir } from 'node:os'
-import { isAbsolute, join, relative, sep } from 'node:path'
+import { isAbsolute, join, posix, relative, resolve, sep } from 'node:path'
 
-/** The root of the Volume on disk. */
-export const filesRoot = (): string => join(homedir(), 'files')
-
-/** This shell's own directory: state, record, lock and socket. Never in the Volume. */
+/**
+ * This shell's own directory: state, record, lock and socket. Never in the Volume.
+ * `GHOST_SHELL_DIR` names another one, for a second shell on the same machine.
+ */
 export function shellDir(): string {
+	if (process.env.GHOST_SHELL_DIR) return resolve(process.env.GHOST_SHELL_DIR)
 	if (process.platform === 'darwin')
 		return join(homedir(), 'Library', 'Application Support', 'ghost')
 	return join(process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state'), 'ghost')
@@ -18,4 +19,9 @@ export function volumeCwd(cwd: string, root: string): string {
 	const rel = relative(root, cwd)
 	if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return '/'
 	return `/${rel.split(sep).join('/')}`
+}
+
+/** A Volume path as a real path under `root`; `..` stops at the Volume's root. */
+export function devicePath(path: string, root: string): string {
+	return join(root, posix.resolve('/', path).slice(1))
 }

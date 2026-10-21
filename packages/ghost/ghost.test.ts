@@ -820,6 +820,9 @@ describe('shell tools replace built-ins by name', () => {
 		const withBash = sectionsOf(seenReplaced[0] ?? { messages: [] }).filesystem
 		expect(withBash).not.toContain(JUST_BASH)
 		expect(withBash).toContain(
+			'`/system/user.md` is `"$GHOST_VOLUME/system/user.md"`\nthere, and a bare `/` is the device\'s own root.'
+		)
+		expect(withBash).toContain(
 			'apps. `read`, `write` and `edit` see the Volume and nothing else, rooted at\n`/`; relative paths start from the directory the user asked from.\n`bash`, `emacs` reach this device itself'
 		)
 		expect(sectionsOf(seenKept[0] ?? { messages: [] }).filesystem).toContain(

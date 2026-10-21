@@ -6,8 +6,9 @@ import type { AuthEvent } from '@earendil-works/pi-ai'
 import type { TranscriptEntry } from '@justfiles/ghost'
 import { connectOrStart, exchange, Lost } from './client.ts'
 import { main } from './main.ts'
-import { filesRoot, shellDir, volumeCwd } from './paths.ts'
+import { shellDir, volumeCwd } from './paths.ts'
 import type { Reply } from './protocol.ts'
+import { readSettings, volumeRoot } from './settings.ts'
 
 const USAGE = `usage:
   ghost ask "<text>" [--steer] [--json]
@@ -42,7 +43,7 @@ async function run(argv: string[]): Promise<number> {
 				type: 'ask' as const,
 				id: randomUUID(),
 				text,
-				cwd: cwd(),
+				cwd: cwd(dir),
 				...(values.steer ? { steer: true } : {})
 			}
 			let failed = false
@@ -140,8 +141,8 @@ async function run(argv: string[]): Promise<number> {
 }
 
 /** This directory as a Volume path; `/` outside the Volume. */
-function cwd(): string {
-	let root = filesRoot()
+function cwd(dir: string): string {
+	let root = volumeRoot(readSettings(dir))
 	try {
 		root = realpathSync(root)
 	} catch {}
