@@ -1152,13 +1152,21 @@ paragraph starts on a line of its own."
         (shr-ensure-newline)))))
 
 (defun ghost--lang-mode (lang)
-  "The major mode for code in LANG, as a fence names it; nil when there is none."
-  (let ((mode (intern (concat (downcase lang) "-mode"))))
-    (if (fboundp mode)
-        mode
-      (let ((mode (assoc-default (concat "x." lang) auto-mode-alist
-                                 #'string-match-p)))
-        (if (consp mode) (car mode) mode)))))
+  "The major mode for code in LANG, as a fence names it; nil when there is none.
+Only a mode `auto-mode-alist' names, by its name or by LANG as a file
+extension: the fence comes from the model, and a function named for it,
+such as `global-auto-revert-mode', may change Emacs."
+  (let* ((modes (mapcar (lambda (entry) (ghost--auto-mode (cdr entry)))
+                        auto-mode-alist))
+         (named (intern-soft (concat (downcase lang) "-mode"))))
+    (if (and named (memq named modes))
+        named
+      (ghost--auto-mode (assoc-default (concat "x." lang) auto-mode-alist
+                                       #'string-match-p)))))
+
+(defun ghost--auto-mode (spec)
+  "The mode of SPEC, an `auto-mode-alist' entry's FUNCTION or (FUNCTION FLAG)."
+  (if (consp spec) (car spec) spec))
 
 (defun ghost--fontify (code mode)
   "CODE with the faces MODE gives it."

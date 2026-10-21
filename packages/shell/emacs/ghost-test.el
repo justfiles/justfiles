@@ -277,6 +277,16 @@
      (should (memq 'font-lock-keyword-face
                    (ensure-list (get-text-property (1- (point)) 'face)))))))
 
+(ert-deftest ghost-test-draws-code-only-in-a-mode-auto-mode-alist-names ()
+  (should (eq (ghost--lang-mode "Python") 'python-mode))
+  (should (eq (ghost--lang-mode "sh") 'sh-mode))
+  ;; A fence naming a global minor mode draws plain code and leaves it off.
+  (should-not (ghost--lang-mode "global-auto-revert"))
+  (should (equal (ghost--shr (concat "<pre><code class=\"language-global-auto-revert\">"
+                                     "x\n</code></pre>"))
+                 "x"))
+  (should-not (bound-and-true-p global-auto-revert-mode)))
+
 (ert-deftest ghost-test-keeps-a-paragraph-answer-on-its-label-line ()
   (ghost-test--with-transcript
    (ghost--event
