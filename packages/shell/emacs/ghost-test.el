@@ -373,7 +373,40 @@
              (should (equal (ghost-test--args dir "ask")
                             "ask\n--json\n--\nExplain it.\n\nan")))))
       (fmakunbound 'ghost-test-explain)
+      (when (get-buffer "*ghost quick*") (kill-buffer "*ghost quick*"))
       (delete-directory dir t))))
+
+(ert-deftest ghost-test-logs-quick-answers-and-shows-long-ones ()
+  (let ((messages nil) (ghost--quick-answer nil) (kill-ring nil))
+    (when (get-buffer "*ghost quick*") (kill-buffer "*ghost quick*"))
+    (unwind-protect
+        (cl-letf (((symbol-function 'message)
+                   (lambda (format &rest args)
+                     (push (apply #'format-message format args) messages))))
+          (ghost--quick-answer "apple" "A fruit.")
+          (should (member "A fruit." messages))
+          (should-not (get-buffer-window "*ghost quick*" t))
+          (ghost-quick-copy)
+          (should (equal (current-kill 0) "A fruit."))
+          ;; A long answer shows the log at its entry instead.
+          (let ((long (mapconcat #'number-to-string (number-sequence 1 80) "\n")))
+            (ghost--quick-answer "count" long)
+            (should-not (member long messages))
+            (let ((window (get-buffer-window "*ghost quick*" t)))
+              (should window)
+              (should (= (window-start window) ghost--quick-entry))
+              (with-current-buffer "*ghost quick*"
+                (should (eq major-mode 'ghost-quick-mode))
+                (should (string-match-p
+                         "\\`[0-9:]+ you › apple\n[0-9:]+ ghost › A fruit\\.\n\n[0-9:]+ you › count\n[0-9:]+ ghost › 1\n2\n"
+                         (buffer-string)))
+                (should (= ghost--quick-entry
+                           (save-excursion (goto-char (point-max))
+                                           (search-backward "you › count")
+                                           (line-beginning-position)))))))
+          (ghost-quick-show)
+          (should-not (get-buffer-window "*ghost quick*" t)))
+      (when (get-buffer "*ghost quick*") (kill-buffer "*ghost quick*")))))
 
 (ert-deftest ghost-test-ends-the-watch-when-idle-and-hidden ()
   (let* ((dir (file-name-as-directory (make-temp-file "ghost-bin" t)))
