@@ -25,13 +25,14 @@ interface Params {
 }
 
 /**
- * `bash` on the disk under `root`, the Volume's root, starting in the ask's directory there.
- * `denied` is the resolved path of a directory it can neither read nor write.
+ * `bash` on the disk under `root`, the Volume's root, starting in the ask's directory there,
+ * with `GHOST_VOLUME` set to `root`. `denied` is the resolved path of a directory it can
+ * neither read nor write.
  */
 export function bashTool({ root, denied }: { root: string; denied: string }): Tool<Params> {
 	return {
 		name: 'bash',
-		description: `Run a command with real bash on this device: real processes, with the user's programs on PATH (git, node, pnpm, ws, herdr and the rest). The Volume is this device's \`${root}\`: the Volume path \`/x\` is \`${root}/x\` here, and the command starts in the directory the user asked from. \`${denied}\` cannot be read or written. Returns stdout and stderr together, cut to the last ${MAX_LINES} lines or ${MAX_BYTES / 1024}KB. Waits for the command to exit, and kills it after ${DEFAULT_TIMEOUT} seconds unless \`timeout\` gives another limit, so do not start background processes.`,
+		description: `Run a command with real bash on this device: real processes, with the user's programs on PATH (git, node, pnpm, ws, herdr and the rest). \`$GHOST_VOLUME\` is the Volume's directory on this device: the Volume path \`/x\` is \`"$GHOST_VOLUME/x"\` here, and a bare \`/x\` is this device's own root. The command starts in the directory the user asked from. \`$GHOST_VOLUME/private\` cannot be read or written. Returns stdout and stderr together, cut to the last ${MAX_LINES} lines or ${MAX_BYTES / 1024}KB. Waits for the command to exit, and kills it after ${DEFAULT_TIMEOUT} seconds unless \`timeout\` gives another limit, so do not start background processes.`,
 		parameters: {
 			type: 'object',
 			properties: {
@@ -46,7 +47,7 @@ export function bashTool({ root, denied }: { root: string; denied: string }): To
 		async execute({ command, timeout = DEFAULT_TIMEOUT }, { signal, cwd }) {
 			if (!(timeout > 0 && timeout <= MAX_TIMEOUT))
 				throw new Error(`timeout must be between 0 and ${MAX_TIMEOUT} seconds`)
-			const run = await bash(command, devicePath(cwd, root), denied, timeout * 1000, signal)
+			const run = await bash(command, root, devicePath(cwd, root), denied, timeout * 1000, signal)
 			const { text, truncated } = tail(run.output)
 			const failure = run.timedOut
 				? `[killed after ${timeout} seconds]`
@@ -77,6 +78,7 @@ interface Run {
 /** Run `command` in its own process group, so a timeout or abort kills what it started too. */
 function bash(
 	command: string,
+	root: string,
 	cwd: string,
 	denied: string,
 	timeoutMs: number,
@@ -87,7 +89,12 @@ function bash(
 		const child = spawn(
 			'/usr/bin/sandbox-exec',
 			['-D', `DENIED=${denied}`, '-p', PROFILE, 'bash', '-c', command],
-			{ cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'] }
+			{
+				cwd,
+				env: { ...process.env, GHOST_VOLUME: root },
+				detached: true,
+				stdio: ['ignore', 'pipe', 'pipe']
+			}
 		)
 		let output = ''
 		let dropped = false

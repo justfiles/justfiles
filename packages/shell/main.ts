@@ -15,7 +15,8 @@ import { openGhost, type ShellRecord } from '@justfiles/ghost'
 import { openNodeSqliteState } from '@justfiles/ghost/state/node-sqlite'
 import { volumeCredentials } from './credentials.ts'
 import { type Login, serve } from './daemon.ts'
-import { filesRoot, shellDir, socketPath } from './paths.ts'
+import { shellDir, socketPath } from './paths.ts'
+import { readSettings, volumeRoot } from './settings.ts'
 import { bashTool } from './tools/bash.ts'
 import { emacsTool } from './tools/emacs.ts'
 import { openTool } from './tools/open.ts'
@@ -34,11 +35,11 @@ export async function main(): Promise<void> {
 		const path = await loginPath()
 		if (path !== undefined) process.env.PATH = path
 		const shell = await shellRecord(join(dir, 'shell.json'))
-		const { model: modelId = DEFAULT_MODEL, consolidate } =
-			(await readJson<Settings>(join(dir, 'settings.json'))) ?? {}
+		const settings = readSettings(dir)
+		const { model: modelId = DEFAULT_MODEL, consolidate } = settings
 		// The credentials live in the Volume's private mount, which the ghost's Volume leaves
 		// unbound: the agent's files never include them.
-		const privateRoot = join(filesRoot(), 'private')
+		const privateRoot = join(volumeRoot(settings), 'private')
 		await mkdir(privateRoot, { recursive: true, mode: 0o700 })
 		const models = createModels({
 			credentials: volumeCredentials(volume(fsStore(privateRoot)), '/ghost/credentials.json')
@@ -52,7 +53,8 @@ export async function main(): Promise<void> {
 				`${provider} has no model ${modelId}; settings.json can name ${offered.join(', ')}`
 			)
 		}
-		const root = filesRoot()
+		// Resolved, so that `bash` sees the same paths `pwd` prints.
+		const root = await realpath(volumeRoot(settings))
 		const ghost = await openGhost({
 			volume: volume(fsStore(root, { mounts: ['private'] })),
 			state: await openNodeSqliteState(join(dir, 'state.sqlite')),
@@ -88,13 +90,6 @@ export async function main(): Promise<void> {
  * takes only the GPT-5.6 and GPT-6 models of `openai`'s list; an API key takes them too.
  */
 const DEFAULT_MODEL = 'gpt-6.1-sol'
-
-interface Settings {
-	/** A model id on the provider in use; every one is on `openai`. */
-	model?: string
-	/** `false` in every shell but one on the same Volume: one shell consolidates the notes. */
-	consolidate?: boolean
-}
 
 /**
  * The PATH of the user's login shell, so the machine tools find the user's programs. The

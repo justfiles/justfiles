@@ -57,6 +57,10 @@ describe.skipIf(process.platform !== 'darwin')('bashTool', () => {
 		expect(await run('pwd')).toEqual({ text: root, isError: false })
 	})
 
+	it('sets GHOST_VOLUME to the root', async () => {
+		expect(await run('cd notes; echo "$GHOST_VOLUME"', '/')).toEqual({ text: root, isError: false })
+	})
+
 	it('reports a failing command with its exit code and output', async () => {
 		expect(await run('echo out; echo err >&2; exit 3')).toEqual({
 			text: 'out\nerr\n[exit code 3]',

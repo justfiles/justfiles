@@ -39,13 +39,21 @@ the like, but it cannot run programs such as \`npm\`, \`git\` or \`python\`.`
   \`transcript\` searches and shows them as text: \`search\` across every shell, \`show\` for one
   shell's day.`
 		: ''
+	// A shell's own `bash` runs where `/` is the device's root, not the Volume's.
+	const realBash = machineTools.includes('bash')
+		? `
+\`bash\` is real bash on this device. Every path in this prompt is a Volume path; in \`bash\` the
+Volume is the directory \`$GHOST_VOLUME\`, so \`${paths.PROFILE}\` is \`"$GHOST_VOLUME${paths.PROFILE}"\`
+there, and a bare \`/\` is the device's own root. A device path under \`$GHOST_VOLUME\` is a Volume
+path for the other tools once that prefix is dropped.`
+		: ''
 	const machine =
 		machineTools.length === 0
 			? 'Nothing you have reaches this device outside the Volume.'
 			: `${machineTools.map((name) => `\`${name}\``).join(', ')} reach this device itself, outside the Volume: real processes, real apps, the real filesystem. Use them when the work needs the machine, not the files.`
 	return `Everything you work on is files on one Volume you share with the user and their
 apps.${volume}${justBash}
-${machine}
+${machine}${realBash}
 
 ## This shell
 

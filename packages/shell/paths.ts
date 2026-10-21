@@ -1,9 +1,6 @@
 import { homedir } from 'node:os'
 import { isAbsolute, join, posix, relative, resolve, sep } from 'node:path'
 
-/** The root of the Volume on disk. */
-export const filesRoot = (): string => join(homedir(), 'files')
-
 /**
  * This shell's own directory: state, record, lock and socket. Never in the Volume.
  * `GHOST_SHELL_DIR` names another one, for a second shell on the same machine.

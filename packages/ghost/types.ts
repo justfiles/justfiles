@@ -19,7 +19,9 @@ export interface GhostDeps {
 	/**
 	 * Machine capabilities, registered next to the ghost's own tools. The built-ins `read`,
 	 * `write`, `edit`, `bash` and `transcript` are defaults: a tool with one's name replaces
-	 * it. Two tools with one name make `openGhost` reject.
+	 * it. Two tools with one name make `openGhost` reject. A `bash` that replaces just-bash
+	 * sets `GHOST_VOLUME` to the Volume's directory on the device; the prompt tells the agent to
+	 * write Volume paths under it there.
 	 */
 	tools?: Tool[]
 	settings?: GhostSettings
