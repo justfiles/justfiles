@@ -21,6 +21,9 @@
 ;;   `ghost-new'          start a new session with a handoff.
 ;;   `ghost-transcript'   show or hide `*ghost*'.
 ;;
+;; With `ghost-render-markdown', answers are drawn from their Markdown: the
+;; CLI turns it into HTML, and shr draws that.
+;;
 ;; `ghost-define-command' defines commands that use the model as a function,
 ;; through `ghost quick': one completion outside the conversation, with the
 ;; command's prompt as the system prompt.  The answer is echoed, and kept in
@@ -31,6 +34,7 @@
 
 (require 'iso8601)
 (require 'seq)
+(require 'shr)
 (require 'subr-x)
 
 (defgroup ghost nil
@@ -72,6 +76,12 @@ A command's `:effort' takes precedence; see `ghost-define-command'."
                  (const "minimal") (const "low") (const "medium")
                  (const "high") (const "xhigh") (const "max")))
 
+(defcustom ghost-render-markdown t
+  "Non-nil draws answers from their Markdown, as HTML through shr.
+It needs Emacs built with libxml2.  A change shows in the next watch:
+kill `*ghost*' to draw it again."
+  :type 'boolean)
+
 (defcustom ghost-notify-functions nil
   "Functions called with an answer that arrived while `*ghost*' was hidden.
 Each gets the transcript entry as an alist, with `text' holding the
@@ -88,6 +98,11 @@ Nil keeps the line still, with only its time counting."
 
 (defface ghost-you '((t :inherit font-lock-keyword-face :weight bold))
   "The `you ›' label.")
+
+(defface ghost-ask
+  '((((background dark)) :background "gray15" :extend t)
+    (t :background "gray93" :extend t))
+  "An ask in the transcript, its label and text, to set it off from answers.")
 
 (defface ghost-label '((t :inherit font-lock-function-name-face :weight bold))
   "The `ghost ›' label.")
@@ -434,11 +449,13 @@ TO-GHOST, an ask to the ghost that joins PROMPT and the text."
     (if to-ghost
         (ghost--ask (ghost--join prompt text) default-directory 'ask)
       (message "ghost: thinking…")
-      (ghost--quick text prompt (lambda (answer) (ghost--quick-answer text answer))
+      (ghost--quick text prompt
+                    (lambda (answer html) (ghost--quick-answer text answer html))
                     model effort))))
 
 (defun ghost--quick (text system callback &optional model effort)
   "Run `ghost quick' on TEXT with the SYSTEM prompt; call CALLBACK with the answer.
+CALLBACK gets the answer and, with `ghost-render-markdown', its HTML.
 MODEL and EFFORT, else `ghost-quick-model' and `ghost-quick-effort', go
 along when set."
   (let ((default-directory (ghost--local-dir default-directory))
@@ -450,6 +467,7 @@ along when set."
                                ,@(and system (list "--system" system))
                                ,@(and model (list "--model" model))
                                ,@(and effort (list "--effort" effort))
+                               ,@(and (ghost--html-p) '("--html"))
                                "--" ,text)
      :connection-type 'pipe
      :coding 'utf-8
@@ -466,7 +484,7 @@ along when set."
   (cond
    ((string-prefix-p "{\"type\":\"quick\"" line)
     (process-put proc 'ghost-settled t)
-    (funcall callback (alist-get 'text (ghost--parse line))))
+    (let-alist (ghost--parse line) (funcall callback .text .html)))
    ((string-prefix-p "{\"type\":\"error\"" line)
     (process-put proc 'ghost-settled t)
     (message "ghost: %s" (alist-get 'message (ghost--parse line))))
@@ -489,23 +507,24 @@ along when set."
   "M-RET" #'ghost-quick-show
   "M-w" #'ghost-quick-copy)
 
-(defun ghost--quick-answer (text answer)
+(defun ghost--quick-answer (text answer &optional html)
   "Log TEXT and ANSWER in `*ghost quick*'; echo ANSWER, or show a long one there.
-After an echo, `ghost-quick-echo-map' is live for one key."
+With HTML, ANSWER is drawn from it.  After an echo, `ghost-quick-echo-map'
+is live for one key."
   (setq ghost--quick-answer answer)
   (with-current-buffer (ghost--quick-buffer)
     (let ((inhibit-read-only t))
       (goto-char (point-max))
       (unless (bobp) (insert "\n"))
       (setq ghost--quick-entry (point))
-      (ghost--label nil "you" nil)
-      (ghost--text text)
+      (ghost--ask-entry nil nil text)
       (ghost--label nil "ghost" nil)
-      (ghost--text answer)))
-  (if (ghost--fits-echo-p answer)
-      (progn (message "%s" answer)
-             (set-transient-map ghost-quick-echo-map))
-    (ghost--quick-display)))
+      (ghost--text answer html)))
+  (let ((shown (if html (ghost--shr html) answer)))
+    (if (ghost--fits-echo-p shown)
+        (progn (message "%s" shown)
+               (set-transient-map ghost-quick-echo-map))
+      (ghost--quick-display))))
 
 (defun ghost--fits-echo-p (text)
   "Non-nil when TEXT fits the echo area, as `display-message-or-buffer' judges it."
@@ -619,7 +638,8 @@ After an echo, `ghost-quick-echo-map' is live for one key."
           (let ((default-directory (ghost--local-dir nil)))
             (make-process
              :name "ghost-watch"
-             :command (list ghost-program "watch" "--json")
+             :command `(,ghost-program "watch" "--json"
+                                       ,@(and (ghost--html-p) '("--html")))
              :connection-type 'pipe
              :coding 'utf-8
              :noquery t
@@ -858,13 +878,12 @@ The next watch starts with a snapshot, which draws a new `*ghost*'."
     (pcase .kind
       ("user"
        (unless (bobp) (insert "\n"))
-       (ghost--label .at "you" (not .askId))
-       (ghost--text .text)
+       (ghost--ask-entry .at (not .askId) .text)
        (setq ghost--answering (and .askId t)))
       ("assistant"
        (unless (string-empty-p .text)
          (ghost--label .at "ghost" (not ghost--answering))
-         (ghost--text .text)
+         (ghost--text .text .html)
          (setq ghost--last-answer .text))
        (when .error
          (insert (propertize (format "  %s\n" .error) 'face 'ghost-error)))
@@ -899,15 +918,27 @@ The next watch starts with a snapshot, which draws a new `*ghost*'."
                    " ")
            'ghost-turn t)))
 
+(defun ghost--ask-entry (at mark text)
+  "Insert an ask of TEXT at AT, with the MARK of an unasked entry, on `ghost-ask'."
+  (let ((start (point)))
+    (ghost--label at "you" mark)
+    (ghost--text text)
+    (add-face-text-property start (point) 'ghost-ask t)))
+
 (defun ghost--time (at)
   "The ISO time AT as HH:MM; now when there is none."
   (format-time-string
    "%H:%M" (and at (ignore-errors (encode-time (iso8601-parse at))))))
 
-(defun ghost--text (text)
-  "Insert TEXT and a newline, with buttons on its paths and task ids."
+(defun ghost--text (text &optional html)
+  "Insert TEXT and a newline, with buttons on its paths and task ids.
+With HTML, TEXT is drawn from it; one that does not open with a
+paragraph starts on a line of its own."
   (let ((start (point)))
-    (insert (string-trim-right text) "\n")
+    (if (not html)
+        (insert (string-trim-right text) "\n")
+      (unless (string-prefix-p "<p>" html) (insert "\n"))
+      (insert (ghost--shr html) "\n"))
     (ghost--buttonize start (point))))
 
 (defun ghost--rule (label)
@@ -1073,6 +1104,84 @@ The next watch starts with a snapshot, which draws a new `*ghost*'."
                           (format "%ds" seconds)
                         (format "%dm %02ds" (/ seconds 60) (% seconds 60))))
               'face 'ghost-activity))))))
+
+;;;; Markdown
+
+;; The CLI turns an answer's Markdown into HTML, with micromark; shr draws it,
+;; laying tables out in pixels.  An answer being written shows as it comes,
+;; and `ghost-copy-answer' copies the Markdown.
+
+;; New in Emacs 30.
+(defvar shr-fill-text)
+
+(defvar warning-minimum-level)
+
+(defun ghost--html-p ()
+  "Non-nil when answers are drawn from their HTML."
+  (and ghost-render-markdown (libxml-available-p)))
+
+(defun ghost--shr (html)
+  "HTML drawn by shr, without the blank lines around it."
+  (with-temp-buffer
+    (insert html)
+    (let ((dom (libxml-parse-html-region (point-min) (point-max)))
+          ;; In the default font, as the asks and labels are, not shr's
+          ;; variable-pitch one; tables still line up, at `:align-to'.
+          (shr-use-fonts nil)
+          ;; Unfilled, for `visual-line-mode' to wrap at any width.
+          (shr-fill-text nil)
+          (shr-external-rendering-functions
+           (cons '(pre . ghost--shr-pre) shr-external-rendering-functions)))
+      (erase-buffer)
+      (shr-insert-document dom))
+    (string-trim (buffer-string) "\n+" "\n+")))
+
+(defun ghost--shr-pre (dom)
+  "Draw the code block DOM in the faces of its language, else as shr does."
+  (let* ((code (dom-child-by-tag dom 'code))
+         (class (dom-attr code 'class))
+         (mode (and class
+                    (string-match "language-\\([^ ]+\\)" class)
+                    (ghost--lang-mode (match-string 1 class)))))
+    (if (not mode)
+        (shr-tag-pre dom)
+      ;; micromark escapes the code, so it is all text.
+      (let ((text (string-join (seq-filter #'stringp (dom-children code)))))
+        (shr-ensure-newline)
+        (insert (ghost--fontify (string-trim-right text "\n+") mode))
+        (shr-ensure-newline)))))
+
+(defun ghost--lang-mode (lang)
+  "The major mode for code in LANG, as a fence names it; nil when there is none."
+  (let ((mode (intern (concat (downcase lang) "-mode"))))
+    (if (fboundp mode)
+        mode
+      (let ((mode (assoc-default (concat "x." lang) auto-mode-alist
+                                 #'string-match-p)))
+        (if (consp mode) (car mode) mode)))))
+
+(defun ghost--fontify (code mode)
+  "CODE with the faces MODE gives it."
+  (with-temp-buffer
+    (insert code)
+    ;; A mode may talk as it starts, as python-mode guessing its indent,
+    ;; and a tree-sitter mode without its grammar warns and draws nothing.
+    (let ((warning-minimum-level :emergency)
+          (inhibit-message t)
+          (message-log-max nil))
+      (ignore-errors
+        (delay-mode-hooks (funcall mode))
+        (font-lock-ensure)))
+    ;; Only the faces: a mode leaves other properties, which mean nothing
+    ;; out of its buffer.
+    (let ((text (buffer-substring-no-properties (point-min) (point-max)))
+          (pos (point-min)))
+      (while (< pos (point-max))
+        (let ((next (next-single-property-change pos 'face nil (point-max))))
+          (when-let* ((face (get-text-property pos 'face)))
+            (put-text-property (1- pos) (1- next) 'face face text))
+          (setq pos next)))
+      text)))
 
 ;;;; Buttons
 

@@ -68,6 +68,13 @@
      (should-not (string-match-p "the notes" text))
      (should-not (string-match-p "◆" text)))
    (with-current-buffer "*ghost*"
+     ;; The ask, label to newline, is set off; the answer is not.
+     (goto-char (point-min))
+     (should (memq 'ghost-ask (ensure-list (get-text-property (point) 'face))))
+     (search-forward "Read it.")
+     (should (memq 'ghost-ask (ensure-list (get-text-property (point) 'face))))
+     (search-forward "Done")
+     (should-not (memq 'ghost-ask (ensure-list (get-text-property (point) 'face))))
      (goto-char (point-min))
      (search-forward "▸ read")
      (ghost-toggle-call)
@@ -238,6 +245,45 @@
            (should (equal (button-get (button-at (point)) 'ghost-task)
                           "20261020T151948"))))
       (delete-directory root t))))
+
+(ert-deftest ghost-test-draws-an-answer-from-its-html ()
+  (ghost-test--with-transcript
+   (ghost--event
+    (ghost-test--snapshot
+     (ghost-test--entry
+      :id 1 :kind "assistant" :toolCalls [] :text "# Plan…"
+      :html (concat "<h1>Plan</h1>\n"
+                    "<p>Use <strong>bold</strong> and "
+                    "<a href=\"https://example.com/a\">docs</a>.</p>\n"
+                    "<table><thead><tr><th>Name</th><th>Size</th></tr></thead>"
+                    "<tbody><tr><td>a</td><td>10</td></tr></tbody></table>\n"
+                    "<pre><code class=\"language-emacs-lisp\">(defun f () 1)\n"
+                    "</code></pre>"))))
+   (should (equal ghost--last-answer "# Plan…"))
+   (let ((text (ghost-test--text)))
+     (should (string-match-p "ghost › \nPlan\n" text))
+     (should (string-match-p "Use bold and docs\\." text))
+     (should (string-match-p "Name +Size" text))
+     (should (string-match-p "^(defun f () 1)\n\\'" text))
+     (should-not (string-match-p "[<*#]" (substring text (string-search "\n" text)))))
+   (with-current-buffer "*ghost*"
+     (goto-char (point-min))
+     (search-forward "Use")
+     ;; The default font, as the rest of the transcript, not shr's own.
+     (should-not (get-text-property (point) 'face))
+     (search-forward "doc")
+     (should (equal (get-text-property (point) 'shr-url) "https://example.com/a"))
+     (search-forward "defun")
+     (should (memq 'font-lock-keyword-face
+                   (ensure-list (get-text-property (1- (point)) 'face)))))))
+
+(ert-deftest ghost-test-keeps-a-paragraph-answer-on-its-label-line ()
+  (ghost-test--with-transcript
+   (ghost--event
+    (ghost-test--snapshot
+     (ghost-test--entry :id 1 :kind "assistant" :toolCalls [] :text "*Done*."
+                        :html "<p><em>Done</em>.</p>\n")))
+   (should (string-match-p "ghost › Done\\.\n\\'" (ghost-test--text)))))
 
 (ert-deftest ghost-test-marks-an-answer-that-arrives-hidden ()
   (ghost-test--with-transcript
@@ -414,7 +460,7 @@
                  (accept-process-output nil 0.05)))
              (should (equal (ghost-test--args dir "quick")
                             (concat "quick\n--json\n--system\nExplain it.\n"
-                                    "--model\nmini\n--effort\nlow\n--\nan apple")))
+                                    "--model\nmini\n--effort\nlow\n--html\n--\nan apple")))
              ;; Without a region, the symbol at point is the default.
              (deactivate-mark)
              (goto-char 4)
@@ -433,11 +479,11 @@
         (cl-letf (((symbol-function 'message)
                    (lambda (format &rest args)
                      (push (apply #'format-message format args) messages))))
-          (ghost--quick-answer "apple" "A fruit.")
+          (ghost--quick-answer "apple" "A *fruit*." "<p>A <em>fruit</em>.</p>")
           (should (member "A fruit." messages))
           (should-not (get-buffer-window "*ghost quick*" t))
           (ghost-quick-copy)
-          (should (equal (current-kill 0) "A fruit."))
+          (should (equal (current-kill 0) "A *fruit*."))
           ;; A long answer shows the log at its entry instead.
           (let ((long (mapconcat #'number-to-string (number-sequence 1 80) "\n")))
             (ghost--quick-answer "count" long)
