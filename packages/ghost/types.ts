@@ -16,7 +16,11 @@ export interface GhostDeps {
 	/** Built by the shell; credentials are the shell's. */
 	models: Models
 	shell: ShellRecord
-	/** Machine capabilities, registered next to the ghost's own tools. */
+	/**
+	 * Machine capabilities, registered next to the ghost's own tools. The built-ins `read`,
+	 * `write`, `edit`, `bash` and `transcript` are defaults: a tool with one's name replaces
+	 * it. Two tools with one name make `openGhost` reject.
+	 */
 	tools?: Tool[]
 	settings?: GhostSettings
 }
