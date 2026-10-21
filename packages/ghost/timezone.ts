@@ -14,6 +14,15 @@ export function dayInTz(at: Date, tz: string): string {
 	return `${get('year')}-${get('month')}-${get('day')}`
 }
 
+/**
+ * The `YYYY-MM-DD` day `at` belongs to when a day starts at `atHour` in `tz`: 03:59 is still
+ * the day before when `atHour` is 4. The clock is shifted back by whole hours, so on a
+ * daylight-saving day the boundary moves by an hour.
+ */
+export function sessionDay(at: Date, tz: string, atHour: number): string {
+	return dayInTz(new Date(at.getTime() - atHour * 3_600_000), tz)
+}
+
 /** The calendar day before `day`, both `YYYY-MM-DD`. */
 export function dayBefore(day: string): string {
 	const [y, m, d] = day.split('-').map(Number) as [number, number, number]

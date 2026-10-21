@@ -44,6 +44,12 @@ export interface GhostSettings {
 	 * an ask; on unless `false`. One shell per Volume has it on.
 	 */
 	consolidate?: boolean
+	/**
+	 * The hour, 0 to 23 in `timeZone`, a day starts at. The first ask of a day starts a new
+	 * session, as `newSession` does, so each day's conversation begins from memory alone.
+	 * Default 4; `false` keeps one session across days.
+	 */
+	dayBoundary?: number | false
 	/** Automatic compaction; on unless `false`. An object tunes its thresholds, in tokens. */
 	compaction?:
 		| boolean

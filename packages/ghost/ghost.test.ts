@@ -961,13 +961,14 @@ describe('transcript mirror, shell record and transcript tool', () => {
 		const world = volume(memStore())
 		faux.setResponses([fauxAssistantMessage('one'), () => fauxAssistantMessage('two')])
 		const path = join(dir, 'state.sqlite')
-		const first = await openOn(path, undefined, world)
+		// One session across the two days, so the second file starts with the second ask.
+		const first = await openOn(path, undefined, world, { dayBoundary: false })
 		await first.ask('First.', { id: '1' })
 		await first.close()
 		await put(world, '/system/agents/main/transcripts/test/2026-10-20.jsonl', '{"at":"2026-10-20')
 
 		vi.setSystemTime(new Date('2026-10-20T12:00:00Z'))
-		const second = await openOn(path, undefined, world)
+		const second = await openOn(path, undefined, world, { dayBoundary: false })
 		await second.ask('Second.', { id: '2' })
 		await second.close()
 
@@ -1639,3 +1640,157 @@ async function tables(state: StateDatabase): Promise<string[]> {
 	)
 	return rows.map((row) => row.name)
 }
+
+describe('a new session each day', () => {
+	// 2026-10-19 12:00 UTC; with the default boundary the next day starts at 04:00.
+	const NOW = new Date('2026-10-19T12:00:00Z')
+
+	beforeEach(() => {
+		vi.useFakeTimers({ toFake: ['Date'] })
+		vi.setSystemTime(NOW)
+	})
+
+	afterEach(() => {
+		vi.useRealTimers()
+	})
+
+	const kinds = (ghost: Ghost) => snapshotOf(ghost).transcript.entries.map((entry) => entry.kind)
+
+	/** Answers for an ask, the note on it, and the next day's ask; `next` is what that one saw. */
+	function acrossDays() {
+		const seen = { note: '', next: { messages: [] as { role: string }[] } }
+		faux.setResponses([
+			fauxAssistantMessage('noted'),
+			(context) => {
+				seen.note = JSON.stringify(context.messages)
+				return fauxAssistantMessage('- The secret is 42.')
+			},
+			(context) => {
+				seen.next = context
+				return fauxAssistantMessage('fresh')
+			}
+		])
+		return seen
+	}
+
+	it('starts a new session at the first ask of a day, with notes on the old one in its prompt', async () => {
+		const world = volume(memStore())
+		const ghost = await openOn(':memory:', undefined, world)
+		const seen = acrossDays()
+		await ghost.ask('The secret is 42.', { id: '1' })
+
+		vi.setSystemTime(new Date('2026-10-20T04:00:00Z'))
+		const settled = await ghost.ask('What now?', { id: '2' })
+
+		expect(settled).toMatchObject({ status: 'done', text: 'fresh' })
+		expect(seen.note).toContain('The secret is 42.')
+		expect(await dailyOf(world, '2026-10-20')).toBe('- The secret is 42.\n')
+		const sent = seen.next.messages.filter((message) => message.role !== 'system')
+		expect(JSON.stringify(sent)).not.toContain('The secret is 42.')
+		expect(systemPrompt(seen.next)).toContain('## 2026-10-20, shell test\n\n- The secret is 42.')
+		expect(systemPrompt(seen.next)).toContain('Each day starts a new conversation')
+		expect(snapshotOf(ghost).transcript.entries).toMatchObject([
+			{ kind: 'reset' },
+			{ kind: 'user', text: 'What now?' },
+			{ kind: 'assistant', text: 'fresh' }
+		])
+	})
+
+	it('keeps the session until the boundary hour', async () => {
+		const ghost = await openOn(':memory:')
+		faux.setResponses([fauxAssistantMessage('one'), fauxAssistantMessage('two')])
+		await ghost.ask('First.', { id: '1' })
+
+		vi.setSystemTime(new Date('2026-10-20T03:59:00Z'))
+		await ghost.ask('Second.', { id: '2' })
+
+		expect(kinds(ghost)).toEqual(['user', 'assistant', 'user', 'assistant'])
+		expect(faux.state.callCount).toBe(2)
+	})
+
+	it('takes the day from the time zone, at its boundary hour', async () => {
+		const world = volume(memStore())
+		// 2026-10-20 01:00 in Auckland: before 04:00, so still the 19th's session.
+		const ghost = await openOn(':memory:', undefined, world, { timeZone: 'Pacific/Auckland' })
+		acrossDays()
+		await ghost.ask('The secret is 42.', { id: '1' })
+
+		// 04:00 on the 20th in Auckland, while UTC is still on the 19th.
+		vi.setSystemTime(new Date('2026-10-19T15:00:00Z'))
+		await ghost.ask('What now?', { id: '2' })
+
+		expect(kinds(ghost)).toEqual(['reset', 'user', 'assistant'])
+		expect(await dailyOf(world, '2026-10-20')).toBe('- The secret is 42.\n')
+	})
+
+	it('lets a steer into the running turn, whatever the day', async () => {
+		const ghost = await openOn(':memory:')
+		let started!: () => void
+		const answering = new Promise<void>((resolve) => {
+			started = resolve
+		})
+		let release!: () => void
+		const held = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		faux.setResponses([
+			async () => {
+				started()
+				await held
+				return fauxAssistantMessage('one')
+			},
+			fauxAssistantMessage('two')
+		])
+
+		const first = ghost.ask('First.', { id: '1' })
+		await answering
+		vi.setSystemTime(new Date('2026-10-20T04:00:00Z'))
+		const second = ghost.ask('Second.', { id: '2', whenBusy: 'steer' })
+		release()
+		await Promise.all([first, second])
+
+		expect(kinds(ghost)).not.toContain('reset')
+		expect(faux.state.callCount).toBe(2)
+	})
+
+	it('does not start another session when the day opens on a fresh one', async () => {
+		const ghost = await openOn(':memory:')
+		faux.setResponses([
+			fauxAssistantMessage('one'),
+			fauxAssistantMessage('- First.'),
+			fauxAssistantMessage('two')
+		])
+		await ghost.ask('First.', { id: '1' })
+		await ghost.newSession()
+
+		vi.setSystemTime(new Date('2026-10-20T04:00:00Z'))
+		await ghost.ask('Second.', { id: '2' })
+
+		expect(kinds(ghost)).toEqual(['reset', 'user', 'assistant'])
+		expect(faux.state.callCount).toBe(3)
+	})
+
+	it('keeps one session across days with the boundary off', async () => {
+		const ghost = await openOn(':memory:', undefined, undefined, { dayBoundary: false })
+		faux.setResponses([
+			(context) => {
+				expect(systemPrompt(context)).not.toContain('Each day starts a new conversation')
+				return fauxAssistantMessage('one')
+			},
+			fauxAssistantMessage('two')
+		])
+		await ghost.ask('First.', { id: '1' })
+
+		vi.setSystemTime(new Date('2026-10-21T12:00:00Z'))
+		await ghost.ask('Second.', { id: '2' })
+
+		expect(kinds(ghost)).toEqual(['user', 'assistant', 'user', 'assistant'])
+		expect(faux.state.callCount).toBe(2)
+	})
+
+	it('refuses a boundary that is not an hour', async () => {
+		await expect(openOn(':memory:', undefined, undefined, { dayBoundary: 24 })).rejects.toThrow(
+			'dayBoundary'
+		)
+	})
+})

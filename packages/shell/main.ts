@@ -38,7 +38,12 @@ export async function main(): Promise<void> {
 		if (path !== undefined) process.env.PATH = path
 		const shell = await shellRecord(join(dir, 'shell.json'))
 		const settings = readSettings(dir)
-		const { model: modelId = DEFAULT_MODEL, consolidate } = settings
+		const {
+			model: modelId = DEFAULT_MODEL,
+			consolidate,
+			timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone,
+			dayBoundary
+		} = settings
 		// The credentials live in the Volume's private mount, which the ghost's Volume leaves
 		// unbound: the agent's files never include them.
 		const privateRoot = join(volumeRoot(settings), 'private')
@@ -67,7 +72,7 @@ export async function main(): Promise<void> {
 				[bashTool({ root, denied: await realpath(privateRoot) }), emacsTool(root), openTool(root)],
 				await loadCustomTools(join(dir, 'tools'), { root })
 			),
-			settings: { model: { provider, modelId }, consolidate }
+			settings: { model: { provider, modelId }, consolidate, timeZone, dayBoundary }
 		})
 		const login: Login = async (device, notify, signal) => {
 			await models.login(

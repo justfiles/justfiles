@@ -18,11 +18,17 @@ You are Computer, a calm and capable companion. You help with whatever the user 
 // The `# your filesystem` block: the Volume versus the machine, which shell this is, and where
 // every record lives. Byte-stable for a shell (no live data) so it sits in the cached prefix.
 // `builtIns` are the built-in tools no shell tool replaced; only those are described.
+// `daily` says each day starts a new session.
 export function filesystemPrompt(
 	shell: ShellRecord,
 	builtIns: readonly string[],
-	machineTools: readonly string[]
+	machineTools: readonly string[],
+	daily: boolean
 ): string {
+	const fresh = daily
+		? ` Each day starts a new conversation: what was said
+  before is in these notes and in the transcripts, not in your context.`
+		: ''
 	const volumeTools = builtIns.filter((name) => VOLUME_TOOLS.includes(name))
 	const volume =
 		volumeTools.length === 0
@@ -87,7 +93,7 @@ would only be re-reading your own context.
   shell's. Notes land here before older context leaves this conversation, and are
   consolidated into core.md nightly. Today's and yesterday's from every shell are in your
   context; OLDER days exist only on disk, so this is the one memory directory worth
-  reading: \`rg\` here for "what were we doing last week".
+  reading: \`rg\` here for "what were we doing last week".${fresh}
 
 ## Other shells' records
 
