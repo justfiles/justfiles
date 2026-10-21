@@ -78,6 +78,11 @@ Each gets the transcript entry as an alist, with `text' holding the
 answer; use it for a system notification."
   :type 'hook)
 
+(defcustom ghost-spinner "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+  "The frames of the spinner on the activity line, one per character.
+Nil keeps the line still, with only its time counting."
+  :type '(choice (string :tag "Frames") (const :tag "None" nil)))
+
 (defface ghost-time '((t :inherit shadow))
   "The time of a transcript entry.")
 
@@ -101,6 +106,9 @@ answer; use it for a system notification."
 
 (defface ghost-busy '((t :inherit warning))
   "The mode-line lighter while the ghost is busy.")
+
+(defface ghost-activity '((t :inherit shadow))
+  "The activity line: what the ghost is doing, at the end of `*ghost*'.")
 
 (defface ghost-unseen '((t :inherit success :weight bold))
   "The mode-line lighter when an answer arrived while `*ghost*' was hidden.")
@@ -137,6 +145,21 @@ answer; use it for a system notification."
 
 (defvar ghost--last-answer nil
   "The text of the newest answer, for `ghost-copy-answer'.")
+
+(defvar ghost--sending nil
+  "Non-nil from an ask until the ghost takes it up or the ask ends.")
+
+(defvar ghost--running nil
+  "The tools running in the turn, as (CALL-ID . NAME), newest first.")
+
+(defvar ghost--activity nil
+  "What the ghost is doing, as (LABEL . SINCE); nil when it is not.")
+
+(defvar ghost--activity-overlay nil
+  "In `*ghost*', the overlay at the end that shows `ghost--activity'.")
+
+(defvar ghost--activity-timer nil
+  "Redraws the activity line while there is a `ghost--activity'.")
 
 (defvar ghost--quick-answer nil
   "The text of the newest quick answer, for `ghost-quick-copy'.")
@@ -280,12 +303,16 @@ rest from the watch, which may have ended while the ask was written."
                (ghost--lines proc chunk
                              (lambda (line) (ghost--ask-line proc line how))))
      :sentinel #'ghost--ask-ended))
-  (setq ghost--asks (1+ ghost--asks)))
+  (setq ghost--asks (1+ ghost--asks)
+        ghost--sending t)
+  (ghost--update-activity))
 
 (defun ghost--ask-ended (proc _event)
   "Count the ask PROC out, and say why it failed when nothing else did."
   (unless (process-live-p proc)
     (setq ghost--asks (max 0 (1- ghost--asks)))
+    (when (zerop ghost--asks) (setq ghost--sending nil))
+    (ghost--update-activity)
     (ghost--arm-idle)
     (ghost--failed proc)))
 
@@ -611,7 +638,8 @@ After an echo, `ghost-quick-echo-map' is live for one key."
   (when (process-live-p ghost--watch)
     (process-put ghost--watch 'ghost-stopping t)
     (delete-process ghost--watch))
-  (setq ghost--watch nil ghost--status nil)
+  (setq ghost--watch nil ghost--status nil ghost--running nil)
+  (ghost--update-activity)
   (force-mode-line-update t))
 
 (defun ghost--watch-line (proc line)
@@ -625,7 +653,8 @@ After an echo, `ghost-quick-echo-map' is live for one key."
   "Start the watch PROC again when it lost a daemon it was connected to."
   (unless (or (process-live-p proc) (process-get proc 'ghost-stopping))
     (when (eq proc ghost--watch)
-      (setq ghost--watch nil ghost--status nil)
+      (setq ghost--watch nil ghost--status nil ghost--running nil)
+      (ghost--update-activity)
       (force-mode-line-update t))
     (if (process-get proc 'ghost-connected)
         ;; The daemon went away, killed or restarting after a login; the CLI
@@ -763,16 +792,22 @@ The next watch starts with a snapshot, which draws a new `*ghost*'."
   (let-alist event
     (pcase .type
       ("snapshot"
-       (setq ghost--status .status)
+       (setq ghost--status .status ghost--running nil)
        (ghost--render-snapshot .transcript))
       ("entry"
+       (when (equal .entry.kind "tool")
+         (setf (alist-get .entry.callId ghost--running nil t #'equal) nil))
        (ghost--write (lambda () (ghost--entry .entry)))
        (ghost--arrived .entry))
       ("text" (ghost--write (lambda () (ghost--delta .delta))))
+      ("tool" (push (cons .callId .name) ghost--running))
       ("status"
        (setq ghost--status .status)
+       (unless (alist-get 'busy .status) (setq ghost--running nil))
        (unless (ghost--visible-p) (ghost--arm-idle)))
-      ("error" (message "ghost: %s" .message))))
+      ("error" (message "ghost: %s" .message)))
+    (when (alist-get 'busy ghost--status) (setq ghost--sending nil)))
+  (ghost--update-activity)
   (force-mode-line-update t))
 
 (defun ghost--arrived (entry)
@@ -975,6 +1010,69 @@ The next watch starts with a snapshot, which draws a new `*ghost*'."
   (unless ghost--last-answer (user-error "No answer yet"))
   (kill-new ghost--last-answer)
   (message "Copied the last answer"))
+
+;;;; The activity line
+
+(defun ghost--update-activity ()
+  "Follow what the ghost is doing on the activity line, timed from each change."
+  (let ((label (ghost--activity-label)))
+    (unless (equal label (car ghost--activity))
+      (setq ghost--activity (and label (cons label (current-time)))))
+    (cond ((and label (not ghost--activity-timer))
+           (let ((interval (if ghost-spinner 0.1 1)))
+             (setq ghost--activity-timer
+                   (run-at-time interval interval #'ghost--draw-activity))))
+          ((and (not label) ghost--activity-timer)
+           (cancel-timer ghost--activity-timer)
+           (setq ghost--activity-timer nil)))
+    (ghost--draw-activity)))
+
+(defun ghost--activity-label ()
+  "What the ghost is doing: a label, `writing', or nil when nothing."
+  (cond ((not (alist-get 'busy ghost--status)) (and ghost--sending "sending"))
+        (ghost--running
+         (concat "running "
+                 (string-join (delete-dups (reverse (mapcar #'cdr ghost--running)))
+                              ", ")))
+        (ghost--partial 'writing)
+        (t "thinking")))
+
+(defun ghost--draw-activity ()
+  "Draw `ghost--activity' at the end of `*ghost*', or take it away."
+  (when-let* ((buffer (get-buffer "*ghost*")))
+    (with-current-buffer buffer
+      (let ((text (ghost--activity-text)))
+        (cond (text
+               ;; A snapshot removes every overlay, ours too.
+               (unless (and ghost--activity-overlay
+                            (eq (overlay-buffer ghost--activity-overlay) buffer))
+                 (setq ghost--activity-overlay (make-overlay 1 1)))
+               (move-overlay ghost--activity-overlay (point-max) (point-max))
+               (overlay-put ghost--activity-overlay 'after-string text))
+              (ghost--activity-overlay
+               (delete-overlay ghost--activity-overlay)
+               (setq ghost--activity-overlay nil)))))))
+
+(defun ghost--activity-text ()
+  "The activity line for `ghost--activity', in the current buffer; nil without one."
+  (pcase-let ((`(,label . ,since) ghost--activity))
+    (cond ((null label) nil)
+          ((eq label 'writing) (propertize "▍" 'face 'ghost-activity))
+          (t
+           (let ((seconds (floor (float-time (time-since since))))
+                 (frame (if ghost-spinner
+                            (string (aref ghost-spinner
+                                          (mod (floor (* 10 (float-time)))
+                                               (length ghost-spinner))))
+                          "…")))
+             (propertize
+              (format "%s  %s %s · %s\n"
+                      (if (memq (char-before (point-max)) '(nil ?\n)) "" "\n")
+                      frame label
+                      (if (< seconds 60)
+                          (format "%ds" seconds)
+                        (format "%dm %02ds" (/ seconds 60) (% seconds 60))))
+              'face 'ghost-activity))))))
 
 ;;;; Buttons
 
