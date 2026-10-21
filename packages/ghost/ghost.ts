@@ -317,7 +317,7 @@ async function open(
 			sections: ghostSections({
 				volume: deps.volume,
 				shell: deps.shell,
-				volumeTools: volumeTools.map((tool) => tool.name),
+				builtIns: [...volumeTools, ...ownTools].map((tool) => tool.name),
 				machineTools: shellTools.map((tool) => tool.name),
 				timeZone
 			}),

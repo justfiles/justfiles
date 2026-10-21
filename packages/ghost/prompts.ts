@@ -17,12 +17,13 @@ You are Computer, a calm and capable companion. You help with whatever the user 
 
 // The `# your filesystem` block: the Volume versus the machine, which shell this is, and where
 // every record lives. Byte-stable for a shell (no live data) so it sits in the cached prefix.
-// `volumeTools` are the built-in Volume tools a shell tool has not replaced.
+// `builtIns` are the built-in tools no shell tool replaced; only those are described.
 export function filesystemPrompt(
 	shell: ShellRecord,
-	volumeTools: readonly string[],
+	builtIns: readonly string[],
 	machineTools: readonly string[]
 ): string {
+	const volumeTools = builtIns.filter((name) => VOLUME_TOOLS.includes(name))
 	const volume =
 		volumeTools.length === 0
 			? ''
@@ -32,6 +33,11 @@ export function filesystemPrompt(
 		? ` \`bash\` is an emulated
 shell over those files with no real processes: it has \`ls\`, \`cat\`, \`rg\`, \`jq\`, \`sed\` and
 the like, but it cannot run programs such as \`npm\`, \`git\` or \`python\`.`
+		: ''
+	const transcript = builtIns.includes('transcript')
+		? `
+  \`transcript\` searches and shows them as text: \`search\` across every shell, \`show\` for one
+  shell's day.`
 		: ''
 	const machine =
 		machineTools.length === 0
@@ -80,9 +86,7 @@ would only be re-reading your own context.
 - \`${paths.shellsDir()}/<shell>.json\` — each shell: its name, kind, capabilities and when
   it was last seen.
 - \`${paths.transcriptsDir()}/<shell>/YYYY-MM-DD.jsonl\` — each shell's conversation, one
-  entry per line, a file per day, this shell's included. Read only; never edit them.
-  \`transcript\` searches and shows them as text: \`search\` across every shell, \`show\` for one
-  shell's day.
+  entry per line, a file per day, this shell's included. Read only; never edit them.${transcript}
 
 When a question refers to something not in this conversation, look in these transcripts and
 the daily notes before saying you do not know; if nothing is found, ask.
@@ -103,6 +107,8 @@ the daily notes before saying you do not know; if nothing is found, ask.
 When looking for something the user told you, search BOTH. They are one knowledge base split
 by ownership, not by subject.`
 }
+
+const VOLUME_TOOLS = ['read', 'write', 'edit', 'bash']
 
 /** `a`, `b` and `c`. */
 function and(names: readonly string[]): string {

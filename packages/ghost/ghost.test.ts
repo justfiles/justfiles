@@ -836,6 +836,17 @@ the like, but it cannot run programs such as \`npm\`, \`git\` or \`python\`.
 		)
 	})
 
+	it('drops the built-in transcript lines when transcript is replaced', async () => {
+		const replaced = await openOn(':memory:', [shellTool('transcript').tool])
+		const seen = answer()
+		await replaced.ask('Hi', { id: 'h' })
+
+		const filesystem = sectionsOf(seen[0] ?? { messages: [] }).filesystem
+		expect(filesystem).not.toContain('`transcript` searches')
+		expect(filesystem).toContain('`transcript` reach this device itself')
+		expect(filesystem).toContain("this shell's included. Read only; never edit them.\n\nWhen")
+	})
+
 	it('rejects two shell tools with one name, naming the tool', async () => {
 		const state = await openNodeSqliteState(':memory:')
 		const opening = openGhost(
