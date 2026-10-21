@@ -37,6 +37,8 @@ interface SectionDeps {
 	builtIns: readonly string[]
 	/** Names of the shell's tools, which reach the machine instead of the Volume. */
 	machineTools: readonly string[]
+	/** Whether each day starts a new session. */
+	daily: boolean
 	timeZone: string
 }
 
@@ -73,13 +75,14 @@ async function render({
 	shell,
 	builtIns,
 	machineTools,
+	daily,
 	timeZone
 }: SectionDeps): Promise<Rendered> {
 	const now = new Date()
 	const today = dayInTz(now, timeZone)
 	return {
 		soul: (await readText(volume, paths.soul())) ?? DEFAULT_SOUL,
-		filesystem: block('# your filesystem', filesystemPrompt(shell, builtIns, machineTools)),
+		filesystem: block('# your filesystem', filesystemPrompt(shell, builtIns, machineTools, daily)),
 		user: block('# about the user', await readText(volume, paths.PROFILE)),
 		skills: block('# skills', await skillsCatalogue(volume)),
 		time: block(

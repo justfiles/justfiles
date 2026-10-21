@@ -42,7 +42,7 @@ import {
 	useGeneration
 } from './rotation.ts'
 import { ghostSections } from './sections.ts'
-import { DEFAULT_TIMEZONE } from './timezone.ts'
+import { DEFAULT_TIMEZONE, sessionDay } from './timezone.ts'
 import { ASK, createTranscript, text } from './transcript.ts'
 import { transcriptTool } from './transcript-tool.ts'
 import type {
@@ -61,6 +61,8 @@ const context = BACKGROUND_CONTEXT
 const NOTE_MEMO = 'ghost.note'
 /** The entry kind that marks a reset's note as taken; the model never sees it. */
 const NOTED = 'ghost.noted'
+/** The hour a day starts at when the settings name none. */
+const DAY_BOUNDARY = 4
 
 /**
  * State above this many bytes moves to a fresh generation at the next check: at open, after
@@ -111,6 +113,12 @@ export async function openRotating(deps: GhostDeps, maxBytes: number): Promise<G
 			if (named.has(name)) throw new Error(`two shell tools are named \`${name}\``)
 			named.add(name)
 		}
+		const boundary = deps.settings?.dayBoundary
+		if (
+			typeof boundary === 'number' &&
+			!(Number.isInteger(boundary) && boundary >= 0 && boundary < 24)
+		)
+			throw new Error(`dayBoundary is an hour from 0 to 23, or false, not ${boundary}`)
 		const stored = await currentGeneration(db)
 		generation = stored.generation
 		carried = stored.carried
@@ -261,6 +269,7 @@ async function open(
 ): Promise<Generation> {
 	const model = deps.settings?.model
 	const timeZone = deps.settings?.timeZone ?? DEFAULT_TIMEZONE
+	const dayBoundary = deps.settings?.dayBoundary ?? DAY_BOUNDARY
 	const notes = createNotes({
 		volume: deps.volume,
 		models: deps.models,
@@ -319,6 +328,7 @@ async function open(
 				shell: deps.shell,
 				builtIns: [...volumeTools, ...ownTools].map((tool) => tool.name),
 				machineTools: shellTools.map((tool) => tool.name),
+				daily: dayBoundary !== false,
 				timeZone
 			}),
 			hooks: [
@@ -432,6 +442,34 @@ async function open(
 	// It starts with a reset whose note a process that died first left untaken.
 	const alive = withCancel(context)
 	let noting = noteNewestReset(alive.context).catch(() => {})
+	// Day checks run one at a time too, so two asks that open a day start one session, not two.
+	let renewing: Promise<void> = Promise.resolve()
+
+	/** Start a new context, with `handoff` as its first message when given, and note the old one. */
+	async function renew(handoff?: string): Promise<void> {
+		await noting
+		await root.reset(handoff, context)
+		// Best effort, as before a compaction: the new session is already open, and a note
+		// that failed is taken again at the next open.
+		noting = noting.then(() => noteNewestReset(alive.context).catch(() => {}))
+		await noting
+	}
+
+	/** Start a new session when the context began on an earlier day than the one now. */
+	function renewDay(): Promise<void> {
+		const next = renewing.then(async () => {
+			if (dayBoundary === false) return
+			const { messages } = await root.context(context)
+			// The oldest message, not the first: pi leads with the system message, which a
+			// compaction writes anew, later than the history it keeps.
+			const began = Math.min(...messages.map((message) => message.timestamp))
+			if (began === Number.POSITIVE_INFINITY) return
+			const day = (at: Date) => sessionDay(at, timeZone, dayBoundary)
+			if (day(new Date(began)) < day(new Date())) await renew()
+		})
+		renewing = next.catch(() => {})
+		return next
+	}
 
 	/**
 	 * Note the context the newest reset hid, unless a marker after it says that is done. Waits
@@ -464,6 +502,10 @@ async function open(
 
 	return {
 		async ask(input, { id, whenBusy = 'queue', cwd }) {
+			// A retry answers from its record, and a steer belongs to the run it interrupts;
+			// a new queued ask may open the day first.
+			const known = await root.commit((tx) => tx.submissionByRequest(root.id, id), context)
+			if (known === undefined && whenBusy !== 'steer') await renewDay()
 			const submission = await root.submit(
 				{
 					type: 'input',
@@ -487,14 +529,7 @@ async function open(
 			return root.commit((tx) => settledOf(tx, id, record), context)
 		},
 		abort: () => root.abort(context),
-		async newSession(handoff) {
-			await noting
-			await root.reset(handoff, context)
-			// Best effort, as before a compaction: the new session is already open, and a note
-			// that failed is taken again at the next open.
-			noting = noting.then(() => noteNewestReset(alive.context).catch(() => {}))
-			await noting
-		},
+		newSession: renew,
 		watch(listener) {
 			listener(transcript.current())
 			listeners.add(listener)

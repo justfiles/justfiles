@@ -8,6 +8,10 @@ export interface Settings {
 	model?: string
 	/** `false` in every shell but one on the same Volume: one shell consolidates the notes. */
 	consolidate?: boolean
+	/** An IANA time zone for the day of the notes and the time in the prompt; the machine's by default. */
+	timeZone?: string
+	/** The hour a new day, and with it a new session, starts at; 4 by default, `false` for never. */
+	dayBoundary?: number | false
 	/** The Volume's root on disk; `~` is the home directory. Default `~/files`. */
 	root?: string
 }
