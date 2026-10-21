@@ -5,6 +5,7 @@ import { parseArgs } from 'node:util'
 import type { AuthEvent, ThinkingLevel } from '@earendil-works/pi-ai'
 import type { TranscriptEntry } from '@justfiles/ghost'
 import { connectOrStart, exchange, Lost } from './client.ts'
+import { withHtml } from './html.ts'
 import { main } from './main.ts'
 import { shellDir, volumeCwd } from './paths.ts'
 import { type Reply, THINKING_LEVELS } from './protocol.ts'
@@ -12,8 +13,8 @@ import { readSettings, volumeRoot } from './settings.ts'
 
 const USAGE = `usage:
   ghost ask "<text>" [--steer] [--json]
-  ghost quick "<text>" [--system <text>] [--model <id>] [--effort <level>] [--json]
-  ghost watch [--json]
+  ghost quick "<text>" [--system <text>] [--model <id>] [--effort <level>] [--json [--html]]
+  ghost watch [--json [--html]]
   ghost new [--handoff <text>]
   ghost abort
   ghost status
@@ -30,6 +31,7 @@ async function run(argv: string[]): Promise<number> {
 		allowPositionals: true,
 		options: {
 			json: { type: 'boolean' },
+			html: { type: 'boolean' },
 			steer: { type: 'boolean' },
 			system: { type: 'string' },
 			model: { type: 'string' },
@@ -39,6 +41,8 @@ async function run(argv: string[]): Promise<number> {
 		}
 	})
 	const dir = shellDir()
+	// With --html, each answer also comes as HTML, for a client that draws it.
+	const print = (reply: Reply) => json(values.html ? withHtml(reply) : reply)
 	switch (command) {
 		case 'ask': {
 			const text = positionals.join(' ')
@@ -108,7 +112,7 @@ async function run(argv: string[]): Promise<number> {
 			await exchange(await connectOrStart(dir), request, (reply) => {
 				if (reply.type !== 'quick' && reply.type !== 'error') return false
 				if (reply.type === 'error') failed = true
-				if (values.json) json(reply)
+				if (values.json) print(reply)
 				else if (reply.type === 'quick') process.stdout.write(`${reply.text}\n`)
 				else console.error(`ghost: ${reply.message}`)
 				return true
@@ -116,7 +120,7 @@ async function run(argv: string[]): Promise<number> {
 			return failed ? 1 : 0
 		}
 		case 'watch': {
-			const show = values.json ? json : printer({ echo: true })
+			const show = values.json ? print : printer({ echo: true })
 			await exchange(await connectOrStart(dir), undefined, (reply) => {
 				show(reply)
 				return false
@@ -200,8 +204,8 @@ function announce(event: AuthEvent): void {
 	}
 }
 
-function json(reply: Reply): void {
-	process.stdout.write(`${JSON.stringify(reply)}\n`)
+function json(message: object): void {
+	process.stdout.write(`${JSON.stringify(message)}\n`)
 }
 
 /**
