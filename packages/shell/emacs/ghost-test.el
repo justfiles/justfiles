@@ -22,10 +22,13 @@
   `(let ((ghost--watch nil) (ghost--status nil) (ghost--unseen nil)
          (ghost--idle-timer nil) (ghost--restart-timer nil) (ghost--asks 0) (ghost--partial nil)
          (ghost--answering nil) (ghost--last-answer nil)
-         (ghost--calls (make-hash-table :test #'equal)))
+         (ghost--calls (make-hash-table :test #'equal))
+         (ghost--sending nil) (ghost--running nil) (ghost--activity nil)
+         (ghost--activity-overlay nil) (ghost--activity-timer nil))
      (when (get-buffer "*ghost*") (kill-buffer "*ghost*"))
      (unwind-protect (progn ,@body)
        (ghost--stop-watch)
+       (when ghost--activity-timer (cancel-timer ghost--activity-timer))
        (when ghost--idle-timer (cancel-timer ghost--idle-timer))
        (when (get-buffer "*ghost*") (kill-buffer "*ghost*")))))
 
@@ -94,6 +97,53 @@
      (should (string-suffix-p "ghost › Hello there.\n" text))
      (should-not (string-match-p "Hello\\(\n\\|\\'\\)" text)))
    (should-not ghost--partial)))
+
+(defun ghost-test--activity ()
+  "The activity line at the end of `*ghost*', nil when there is none."
+  (with-current-buffer "*ghost*"
+    (seq-some (lambda (overlay) (overlay-get overlay 'after-string))
+              (overlays-in (point-max) (point-max)))))
+
+(ert-deftest ghost-test-shows-what-the-ghost-is-doing-at-the-end ()
+  (ghost-test--with-transcript
+   (let ((ghost-spinner nil))
+     (ghost--event (ghost-test--snapshot))
+     (should-not (ghost-test--activity))
+     ;; Sent, before the ghost takes it up.
+     (setq ghost--sending t)
+     (ghost--update-activity)
+     (should (equal (ghost-test--activity) "  … sending · 0s\n"))
+     (ghost--event '((type . "status") (status (busy . t) (queued . 0))))
+     (ghost--event `((type . "entry")
+                     (entry . ,(ghost-test--entry :id 1 :kind "user" :text "Hi"
+                                                  :askId "a"))))
+     (should-not ghost--sending)
+     (should (equal (ghost-test--activity) "  … thinking · 0s\n"))
+     (setcdr ghost--activity (time-subtract nil 75))
+     (ghost--draw-activity)
+     (should (equal (ghost-test--activity) "  … thinking · 1m 15s\n"))
+     ;; While it writes, a cursor after the text.
+     (ghost--event '((type . "text") (delta . "Let me look")))
+     (should (equal (ghost-test--activity) "▍"))
+     (ghost--event `((type . "entry")
+                     (entry . ,(ghost-test--entry
+                                :id 2 :kind "assistant" :text "Let me look."
+                                :toolCalls [((id . "c1") (name . "bash") (args))
+                                            ((id . "c2") (name . "read") (args))]))))
+     (ghost--event '((type . "tool") (callId . "c1") (name . "bash")))
+     (ghost--event '((type . "tool") (callId . "c2") (name . "read")))
+     (should (equal (ghost-test--activity) "  … running bash, read · 0s\n"))
+     (ghost--event `((type . "entry")
+                     (entry . ,(ghost-test--entry :id 3 :kind "tool" :callId "c1"
+                                                  :name "bash" :text "ok"))))
+     (should (equal (ghost-test--activity) "  … running read · 0s\n"))
+     ;; A snapshot drops the overlay, and the next draw makes it again.
+     (ghost--event `((type . "snapshot") (transcript (entries . []))
+                     (status (busy . t) (queued . 0))))
+     (should (equal (ghost-test--activity) "  … thinking · 0s\n"))
+     (ghost--event '((type . "status") (status (busy) (queued . 0))))
+     (should-not (ghost-test--activity))
+     (should-not ghost--activity-timer))))
 
 (ert-deftest ghost-test-forgets-the-transcript-when-its-buffer-is-killed ()
   (ghost-test--with-transcript
