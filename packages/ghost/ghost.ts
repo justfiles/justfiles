@@ -460,8 +460,10 @@ async function open(
 		const next = renewing.then(async () => {
 			if (dayBoundary === false) return
 			const { messages } = await root.context(context)
-			const began = messages[0]?.timestamp
-			if (began === undefined) return
+			// The oldest message, not the first: pi leads with the system message, which a
+			// compaction writes anew, later than the history it keeps.
+			const began = Math.min(...messages.map((message) => message.timestamp))
+			if (began === Number.POSITIVE_INFINITY) return
 			const day = (at: Date) => sessionDay(at, timeZone, dayBoundary)
 			if (day(new Date(began)) < day(new Date())) await renew()
 		})

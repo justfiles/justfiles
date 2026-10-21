@@ -1723,6 +1723,34 @@ describe('a new session each day', () => {
 		expect(await dailyOf(world, '2026-10-20')).toBe('- The secret is 42.\n')
 	})
 
+	it('resets after a compaction that crossed the boundary and kept the old history', async () => {
+		const ghost = await openOn(':memory:', undefined, undefined, {
+			compaction: {
+				reserveTokens: faux.getModel().contextWindow - 500,
+				keepRecentTokens: 120,
+				backgroundTokens: 0
+			}
+		})
+		// Answers, notes and summaries alike, each timed when asked for; only the kinds and
+		// times of the entries matter here.
+		faux.setResponses(Array.from({ length: 12 }, () => () => fauxAssistantMessage('ok')))
+		vi.setSystemTime(new Date('2026-10-19T03:00:00Z'))
+		await ghost.ask('x'.repeat(2000), { id: 'a' })
+		vi.setSystemTime(new Date('2026-10-19T03:50:00Z'))
+		await ghost.ask('Still the same day.', { id: 'b' })
+		// Past the boundary, a steer compacts without a reset: pi writes the system message
+		// anew, with this time, ahead of the history it keeps from before the boundary.
+		vi.setSystemTime(new Date('2026-10-19T04:10:00Z'))
+		await ghost.ask('Go on.', { id: 'c', whenBusy: 'steer' })
+		expect(kinds(ghost)).toContain('compaction')
+		expect(kinds(ghost)).not.toContain('reset')
+
+		vi.setSystemTime(new Date('2026-10-19T09:00:00Z'))
+		await ghost.ask('What now?', { id: 'd' })
+
+		expect(kinds(ghost)).toEqual(['reset', 'user', 'assistant'])
+	})
+
 	it('lets a steer into the running turn, whatever the day', async () => {
 		const ghost = await openOn(':memory:')
 		let started!: () => void
