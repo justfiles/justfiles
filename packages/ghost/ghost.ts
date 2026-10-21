@@ -106,6 +106,11 @@ export async function openRotating(deps: GhostDeps, maxBytes: number): Promise<G
 			afterRun: check
 		})
 	try {
+		const named = new Set<string>()
+		for (const { name } of deps.tools ?? []) {
+			if (named.has(name)) throw new Error(`two shell tools are named \`${name}\``)
+			named.add(name)
+		}
 		const stored = await currentGeneration(db)
 		generation = stored.generation
 		carried = stored.carried
@@ -290,20 +295,30 @@ async function open(
 		afterRun: opts.afterRun
 	})
 	const registry = createRegistry()
-	const volumeTools = [createReadTool(), createWriteTool(), createEditTool(), createBashTool()]
-	const ownTools = [transcriptTool(deps.volume, timeZone)]
-	const capabilities = [...volumeTools, ...ownTools, ...(deps.tools ?? [])].map((tool) => tool.name)
+	// The built-ins are defaults: a shell tool with one's name takes its place.
+	const shellTools = deps.tools ?? []
+	const builtIn = <T extends { name: string }>(tools: T[]) =>
+		tools.filter((tool) => !shellTools.some(({ name }) => name === tool.name))
+	const volumeTools = builtIn([
+		createReadTool(),
+		createWriteTool(),
+		createEditTool(),
+		createBashTool()
+	])
+	const ownTools = builtIn([transcriptTool(deps.volume, timeZone)])
+	const capabilities = [...volumeTools, ...ownTools, ...shellTools].map((tool) => tool.name)
 	registry.install(
 		defineExtension({
 			name: 'ghost',
 			tools: [
 				...volumeTools.map((tool) => inAskedCwd(tool, env.at)),
-				...[...ownTools, ...(deps.tools ?? [])].map(toPiTool)
+				...[...ownTools, ...shellTools].map(toPiTool)
 			],
 			sections: ghostSections({
 				volume: deps.volume,
 				shell: deps.shell,
-				machineTools: (deps.tools ?? []).map((tool) => tool.name),
+				volumeTools: volumeTools.map((tool) => tool.name),
+				machineTools: shellTools.map((tool) => tool.name),
 				timeZone
 			}),
 			hooks: [

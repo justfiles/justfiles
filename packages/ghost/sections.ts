@@ -33,6 +33,8 @@ type Rendered = Record<(typeof KEYS)[number], string | undefined>
 interface SectionDeps {
 	volume: Volume
 	shell: ShellRecord
+	/** Names of the built-in Volume tools no shell tool replaced. */
+	volumeTools: readonly string[]
 	/** Names of the shell's tools, which reach the machine instead of the Volume. */
 	machineTools: readonly string[]
 	timeZone: string
@@ -66,12 +68,18 @@ export function ghostSections(deps: SectionDeps): PromptSection[] {
 	)
 }
 
-async function render({ volume, shell, machineTools, timeZone }: SectionDeps): Promise<Rendered> {
+async function render({
+	volume,
+	shell,
+	volumeTools,
+	machineTools,
+	timeZone
+}: SectionDeps): Promise<Rendered> {
 	const now = new Date()
 	const today = dayInTz(now, timeZone)
 	return {
 		soul: (await readText(volume, paths.soul())) ?? DEFAULT_SOUL,
-		filesystem: block('# your filesystem', filesystemPrompt(shell, machineTools)),
+		filesystem: block('# your filesystem', filesystemPrompt(shell, volumeTools, machineTools)),
 		user: block('# about the user', await readText(volume, paths.PROFILE)),
 		skills: block('# skills', await skillsCatalogue(volume)),
 		time: block(

@@ -129,10 +129,15 @@ async function dailyOf(world: Volume, day: string) {
 
 /** A request's system prompt: every section in effect, in order. */
 function systemPrompt(context: { messages: readonly object[] }): string {
+	return Object.values(sectionsOf(context)).join('\n\n')
+}
+
+/** A request's prompt sections in effect, by key, in order. */
+function sectionsOf(context: { messages: readonly object[] }): Record<string, string> {
 	const sections: Record<string, string> = {}
 	for (const message of context.messages as { role: string; sections?: Record<string, string> }[])
 		if (message.role === 'system') Object.assign(sections, message.sections)
-	return Object.values(sections).join('\n\n')
+	return sections
 }
 
 /** Answer every request with 'ok', keeping its system prompt. */
@@ -710,6 +715,134 @@ describe('the Volume is the world', () => {
 		expect(writes).toBe(1)
 		expect(dec(await world.readFile('/out.txt'))).toBe('once')
 		expect(toolResults(second)).toMatchObject([{ name: 'write', isError: true }])
+	})
+})
+
+describe('shell tools replace built-ins by name', () => {
+	/** A shell tool named `name` that keeps what each call got. */
+	function shellTool(name: string) {
+		const got: { params: unknown; cwd: string }[] = []
+		const tool: Tool = {
+			name,
+			description: `The shell's ${name}.`,
+			parameters: { type: 'object', properties: {} },
+			execute: async (params, { cwd }) => {
+				got.push({ params, cwd })
+				return { text: `shell ${name} in ${cwd}` }
+			}
+		}
+		return { tool, got }
+	}
+
+	/** Answer with `rounds` of tool calls, then 'done', keeping each request's context. */
+	function answer(...rounds: Parameters<typeof calls>) {
+		const seen: { messages: readonly object[] }[] = []
+		faux.setResponses(
+			[...calls(...rounds), fauxAssistantMessage('done')].map((message) => (context) => {
+				seen.push(context)
+				return message
+			})
+		)
+		return seen
+	}
+
+	/** The tools offered to the model in a request, by name and description. */
+	function toolsOf(context: { messages: readonly object[] }) {
+		return (context.messages as { role: string; toolsAdded?: Tool[] }[]).flatMap((message) =>
+			message.role === 'system'
+				? (message.toolsAdded ?? []).map(({ name, description }) => ({ name, description }))
+				: []
+		)
+	}
+
+	const JUST_BASH = 'emulated\nshell over those files with no real processes'
+
+	it('runs a shell bash in place of just-bash, in the cwd of the ask', async () => {
+		const world = volume(memStore())
+		await world.mkdir('/proj')
+		await world.writeFile('/proj/a.txt', enc('apple\n'))
+		const bash = shellTool('bash')
+		const ghost = await openOn(':memory:', [bash.tool], world)
+		const seen = answer(['bash', { command: 'cat a.txt' }])
+
+		await ghost.ask('Look.', { id: 'b', cwd: '/proj' })
+
+		expect(bash.got).toEqual([{ params: { command: 'cat a.txt' }, cwd: '/proj' }])
+		expect(toolResults(ghost)).toMatchObject([
+			{ name: 'bash', text: 'shell bash in /proj', isError: false }
+		])
+		const offered = toolsOf(seen[0] ?? { messages: [] })
+		expect(offered.filter(({ name }) => name === 'bash')).toEqual([
+			{ name: 'bash', description: "The shell's bash." }
+		])
+		expect(offered.map(({ name }) => name).sort()).toEqual([
+			'bash',
+			'edit',
+			'read',
+			'transcript',
+			'write'
+		])
+		const shellRecord = JSON.parse(
+			dec(await world.readFile('/system/agents/main/shells/test.json'))
+		)
+		expect(shellRecord.capabilities).toEqual(['read', 'write', 'edit', 'transcript', 'bash'])
+	})
+
+	it('runs a shell read in place of the Volume read, in the cwd of the ask', async () => {
+		const world = volume(memStore())
+		await put(world, '/proj/a.txt', 'apple')
+		const read = shellTool('read')
+		const ghost = await openOn(':memory:', [read.tool], world)
+		const seen = answer(['read', { path: 'a.txt' }])
+
+		await ghost.ask('Read it.', { id: 'r', cwd: '/proj' })
+
+		expect(read.got).toEqual([{ params: { path: 'a.txt' }, cwd: '/proj' }])
+		expect(toolResults(ghost)).toMatchObject([{ name: 'read', text: 'shell read in /proj' }])
+		const offered = toolsOf(seen[0] ?? { messages: [] })
+		expect(offered.filter(({ name }) => name === 'read')).toEqual([
+			{ name: 'read', description: "The shell's read." }
+		])
+		const filesystem = sectionsOf(seen[0] ?? { messages: [] }).filesystem
+		expect(filesystem).toContain('apps. `write`, `edit` and `bash` see the Volume')
+		expect(filesystem).toContain('`read` reach this device itself')
+	})
+
+	it('drops the just-bash sentence when bash is replaced, and keeps the section as it was when nothing is', async () => {
+		const bash = shellTool('bash')
+		const replaced = await openOn(':memory:', [bash.tool, shellTool('emacs').tool])
+		const seenReplaced = answer()
+		await replaced.ask('Hi', { id: 'h' })
+		const kept = await openOn(':memory:', [shellTool('emacs').tool])
+		const seenKept = answer()
+		await kept.ask('Hi', { id: 'h' })
+
+		const withBash = sectionsOf(seenReplaced[0] ?? { messages: [] }).filesystem
+		expect(withBash).not.toContain(JUST_BASH)
+		expect(withBash).toContain(
+			'apps. `read`, `write` and `edit` see the Volume and nothing else, rooted at\n`/`; relative paths start from the directory the user asked from.\n`bash`, `emacs` reach this device itself'
+		)
+		expect(sectionsOf(seenKept[0] ?? { messages: [] }).filesystem).toContain(
+			`# your filesystem
+
+Everything you work on is files on one Volume you share with the user and their
+apps. \`read\`, \`write\`, \`edit\` and \`bash\` see the Volume and nothing else, rooted at
+\`/\`; relative paths start from the directory the user asked from. \`bash\` is an emulated
+shell over those files with no real processes: it has \`ls\`, \`cat\`, \`rg\`, \`jq\`, \`sed\` and
+the like, but it cannot run programs such as \`npm\`, \`git\` or \`python\`.
+\`emacs\` reach this device itself, outside the Volume: real processes, real apps, the real filesystem. Use them when the work needs the machine, not the files.
+
+## This shell`
+		)
+	})
+
+	it('rejects two shell tools with one name, naming the tool', async () => {
+		const state = await openNodeSqliteState(':memory:')
+		const opening = openGhost(
+			depsOn(state, volume(memStore()), [shellTool('open').tool, shellTool('open').tool])
+		)
+
+		await expect(opening).rejects.toThrow('two shell tools are named `open`')
 	})
 })
 
