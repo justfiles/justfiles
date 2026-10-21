@@ -353,6 +353,7 @@ rest from the watch, which may have ended while the ask was written."
 
 ;;;; Quick commands
 
+;;;###autoload
 (defmacro ghost-define-command (name prompt &rest options)
   "Define NAME as a command that asks the model PROMPT about some text.
 The text is the active region, else a line read in the minibuffer that
