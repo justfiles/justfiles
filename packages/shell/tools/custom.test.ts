@@ -48,6 +48,17 @@ describe('loadCustomTools', () => {
 		expect(tools.map(({ name }) => name)).toEqual(['a', 'b1', 'b2'])
 	})
 
+	it('names a file whose factory fails', async () => {
+		await mkdir(dir)
+		await writeFile(
+			join(dir, 'key.ts'),
+			`export default async () => { throw new Error('no key') }\n`
+		)
+		await expect(loadCustomTools(dir, { root: '/r' })).rejects.toThrow(
+			/cannot load the tool .*key\.ts: no key/
+		)
+	})
+
 	it('names a file that does not load', async () => {
 		await mkdir(dir)
 		await writeFile(join(dir, 'broken.ts'), `export default (\n`)

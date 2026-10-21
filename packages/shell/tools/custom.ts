@@ -29,13 +29,13 @@ export async function loadCustomTools(dir: string, ctx: Context): Promise<Tool[]
 	for (const name of names.sort()) {
 		if (!EXTENSIONS.some((ext) => name.endsWith(ext)) || name.endsWith('.d.ts')) continue
 		const file = join(dir, name)
-		let exported: Export
+		let made: Tool | Tool[]
 		try {
-			exported = (await import(pathToFileURL(file).href)).default
+			const exported: Export = (await import(pathToFileURL(file).href)).default
+			made = typeof exported === 'function' ? await exported(ctx) : exported
 		} catch (error) {
 			throw new Error(`cannot load the tool ${file}: ${(error as Error).message}`, { cause: error })
 		}
-		const made = typeof exported === 'function' ? await exported(ctx) : exported
 		for (const tool of Array.isArray(made) ? made : [made]) {
 			if (!isTool(tool))
 				throw new Error(
