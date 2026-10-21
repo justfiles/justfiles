@@ -20,6 +20,10 @@
 ;;   `ghost-abort'        stop the turn in progress.
 ;;   `ghost-new'          start a new session with a handoff.
 ;;   `ghost-transcript'   show or hide `*ghost*'.
+;;
+;; `ghost-define-command' defines commands that use the model as a function,
+;; through `ghost quick': one completion outside the conversation, with the
+;; command's prompt as the system prompt, answered in the echo area.
 
 ;;; Code:
 
@@ -53,6 +57,18 @@ exits after its own idle period, and the next ask starts both again."
 (defcustom ghost-window-height 0.3
   "Height of the `*ghost*' side window."
   :type 'number)
+
+(defcustom ghost-quick-model nil
+  "The model of quick commands, an id on the ghost's provider; nil for the ghost's.
+A command's `:model' takes precedence; see `ghost-define-command'."
+  :type '(choice (const :tag "The ghost's model" nil) string))
+
+(defcustom ghost-quick-effort nil
+  "The reasoning effort of quick commands; nil for the model's default.
+A command's `:effort' takes precedence; see `ghost-define-command'."
+  :type '(choice (const :tag "The model's default" nil)
+                 (const "minimal") (const "low") (const "medium")
+                 (const "high") (const "xhigh") (const "max")))
 
 (defcustom ghost-notify-functions nil
   "Functions called with an answer that arrived while `*ghost*' was hidden.
@@ -135,7 +151,8 @@ and lines.  With COMPOSE, write the ask in a buffer instead."
   "Ask as `ghost-ask' does, and insert the answer at point.
 With COMPOSE, write the ask in a buffer instead."
   (interactive "P")
-  (ghost--start compose (point-marker)))
+  (ghost--start compose (let ((marker (point-marker)))
+                          (lambda (text) (ghost--insert-answer marker text)))))
 
 ;;;###autoload
 (defun ghost-steer (&optional compose)
@@ -161,7 +178,7 @@ With COMPOSE, write the ask in a buffer instead."
 
 (defun ghost--start (compose how)
   "Read an ask, in a compose buffer when COMPOSE, and send it as HOW says.
-HOW is `ask', `steer', or a marker to insert the answer at."
+HOW is `ask', `steer', or a function called with the answer."
   (let ((context (and (use-region-p) (ghost--region-context)))
         (dir default-directory))
     (deactivate-mark)
@@ -241,7 +258,7 @@ HOW is `ask', `steer', or a marker to insert the answer at."
 Only the answer's `settled' and errors are read here: `*ghost*' draws the
 rest from the watch, which may have ended while the ask was written."
   (ghost--ensure-watch)
-  (unless (markerp how) (ghost--show))
+  (when (memq how '(ask steer)) (ghost--show))
   (let ((default-directory (ghost--local-dir dir)))
     (make-process
      :name "ghost-ask"
@@ -262,10 +279,13 @@ rest from the watch, which may have ended while the ask was written."
   (unless (process-live-p proc)
     (setq ghost--asks (max 0 (1- ghost--asks)))
     (ghost--arm-idle)
-    (unless (or (process-get proc 'ghost-settled)
-                (zerop (process-exit-status proc)))
-      (message "ghost: %s"
-               (or (process-get proc 'ghost-stderr) "the ask failed")))))
+    (ghost--failed proc)))
+
+(defun ghost--failed (proc)
+  "Say why the ended PROC failed, when nothing else did."
+  (unless (or (process-get proc 'ghost-settled)
+              (zerop (process-exit-status proc)))
+    (message "ghost: %s" (or (process-get proc 'ghost-stderr) "the ask failed"))))
 
 (defun ghost--ask-line (proc line how)
   "Handle one LINE of the ask PROC, sent as HOW."
@@ -274,8 +294,8 @@ rest from the watch, which may have ended while the ask was written."
     (process-put proc 'ghost-settled t)
     (let ((settled (ghost--parse line)))
       (if (equal (alist-get 'status settled) "done")
-          (when (markerp how)
-            (ghost--insert-answer how (alist-get 'text settled)))
+          (unless (memq how '(ask steer))
+            (funcall how (alist-get 'text settled)))
         (let-alist (alist-get 'failure settled)
           (message "ghost: %s: %s%s" .kind .message
                    (if (equal .kind "auth")
@@ -330,6 +350,92 @@ rest from the watch, which may have ended while the ask was written."
   "LINE as JSON: objects as alists, arrays as vectors, false and null nil."
   (json-parse-string line :object-type 'alist :array-type 'array
                      :null-object nil :false-object nil))
+
+;;;; Quick commands
+
+(defmacro ghost-define-command (name prompt &rest options)
+  "Define NAME as a command that asks the model PROMPT about some text.
+The text is the active region, else a line read in the minibuffer that
+defaults to the symbol at point.  The ask is a `ghost quick': one
+completion outside the conversation, with PROMPT as its system prompt.
+The answer shows in the echo area.  With a prefix argument, PROMPT and
+the text go to the ghost itself instead, as `ghost-ask' sends them.
+
+OPTIONS are keywords: `:model' and `:effort' name the model and the
+reasoning effort, over `ghost-quick-model' and `ghost-quick-effort';
+`:doc' is the docstring.
+
+  (ghost-define-command ghost-explain
+    \"Explain the word, then use it in three sentences.\"
+    :effort \"low\")"
+  (declare (indent defun))
+  `(defun ,name (&optional to-ghost)
+     ,(or (plist-get options :doc)
+          (if (stringp prompt)
+              (concat "Ask the model: " prompt
+                      "\n\nWith TO-GHOST, ask the ghost itself.  "
+                      "See `ghost-define-command'.")
+            "A command of `ghost-define-command'."))
+     (interactive "P")
+     (ghost--quick-command ,prompt to-ghost
+                           ,(plist-get options :model)
+                           ,(plist-get options :effort))))
+
+(defun ghost--quick-command (prompt to-ghost model effort)
+  "Ask PROMPT about the region, or about a line read in the minibuffer.
+A quick ask with MODEL and EFFORT, answered in the echo area; with
+TO-GHOST, an ask to the ghost that joins PROMPT and the text."
+  (let* ((region (and (use-region-p)
+                      (buffer-substring-no-properties (region-beginning)
+                                                      (region-end))))
+         (default (unless region (thing-at-point 'symbol t)))
+         (text (string-trim
+                (or region
+                    (read-string (format-prompt "Ask about" default)
+                                 nil 'ghost-history default)))))
+    (deactivate-mark)
+    (when (string-empty-p text) (user-error "Nothing to ask"))
+    (if to-ghost
+        (ghost--ask (ghost--join prompt text) default-directory 'ask)
+      (message "ghost: thinking…")
+      (ghost--quick text prompt (lambda (answer) (message "%s" answer))
+                    model effort))))
+
+(defun ghost--quick (text system callback &optional model effort)
+  "Run `ghost quick' on TEXT with the SYSTEM prompt; call CALLBACK with the answer.
+MODEL and EFFORT, else `ghost-quick-model' and `ghost-quick-effort', go
+along when set."
+  (let ((default-directory (ghost--local-dir default-directory))
+        (model (or model ghost-quick-model))
+        (effort (or effort ghost-quick-effort)))
+    (make-process
+     :name "ghost-quick"
+     :command `(,ghost-program "quick" "--json"
+                               ,@(and system (list "--system" system))
+                               ,@(and model (list "--model" model))
+                               ,@(and effort (list "--effort" effort))
+                               "--" ,text)
+     :connection-type 'pipe
+     :coding 'utf-8
+     :noquery t
+     :filter (lambda (proc chunk)
+               (ghost--lines proc chunk
+                             (lambda (line)
+                               (ghost--quick-line proc line callback))))
+     :sentinel (lambda (proc _event)
+                 (unless (process-live-p proc) (ghost--failed proc))))))
+
+(defun ghost--quick-line (proc line callback)
+  "Handle one LINE of the quick PROC: its answer goes to CALLBACK."
+  (cond
+   ((string-prefix-p "{\"type\":\"quick\"" line)
+    (process-put proc 'ghost-settled t)
+    (funcall callback (alist-get 'text (ghost--parse line))))
+   ((string-prefix-p "{\"type\":\"error\"" line)
+    (process-put proc 'ghost-settled t)
+    (message "ghost: %s" (alist-get 'message (ghost--parse line))))
+   ((not (string-prefix-p "{" line))
+    (process-put proc 'ghost-stderr (string-remove-prefix "ghost: " line)))))
 
 ;;;; Composing
 

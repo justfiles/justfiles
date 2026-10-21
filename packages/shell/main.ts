@@ -16,6 +16,7 @@ import { openNodeSqliteState } from '@justfiles/ghost/state/node-sqlite'
 import { volumeCredentials } from './credentials.ts'
 import { type Login, serve } from './daemon.ts'
 import { shellDir, socketPath } from './paths.ts'
+import { createQuick } from './quick.ts'
 import { readSettings, volumeRoot } from './settings.ts'
 import { bashTool } from './tools/bash.ts'
 import { emacsTool } from './tools/emacs.ts'
@@ -79,7 +80,11 @@ export async function main(): Promise<void> {
 		}
 		const stop = new AbortController()
 		for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => stop.abort())
-		await serve(ghost, socketPath(dir), { signal: stop.signal, login })
+		await serve(ghost, socketPath(dir), {
+			signal: stop.signal,
+			login,
+			quick: createQuick(models, provider, modelId)
+		})
 	} finally {
 		release()
 	}

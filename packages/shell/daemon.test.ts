@@ -105,6 +105,33 @@ describe('serve', () => {
 		await watching
 	})
 
+	it('answers a quick to its client alone', async () => {
+		const stop = new AbortController()
+		const asked: Request[] = []
+		const served = serve(await ghost(), socketPath(dir), {
+			signal: stop.signal,
+			quick: async (request) => {
+				asked.push(request)
+				return `${request.system}: ${request.text}`
+			}
+		})
+
+		const replies: Reply[] = []
+		const watching = exchange(await connected(dir), undefined, (reply) => {
+			replies.push(reply)
+			return false
+		}).catch(() => {})
+		const request: Request = { type: 'quick', text: 'apple', system: 'Explain', effort: 'low' }
+		expect(await one(dir, request, 'quick')).toEqual({ type: 'quick', text: 'Explain: apple' })
+		expect(asked).toEqual([request])
+		await new Promise((resolve) => setTimeout(resolve, 50))
+		expect(replies.map((reply) => reply.type)).toEqual(['snapshot'])
+
+		stop.abort()
+		await served
+		await watching
+	})
+
 	it('relays a login and restarts when it asks to', async () => {
 		const logins: boolean[] = []
 		const served = serve(await ghost(), socketPath(dir), {

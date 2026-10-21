@@ -1,4 +1,4 @@
-import type { AuthEvent } from '@earendil-works/pi-ai'
+import type { AuthEvent, ThinkingLevel } from '@earendil-works/pi-ai'
 import type { Settled, TranscriptEvent } from '@justfiles/ghost'
 
 // The socket protocol: JSON lines, one message per line, each way. A connection gets the
@@ -6,6 +6,11 @@ import type { Settled, TranscriptEvent } from '@justfiles/ghost'
 
 export type Request =
 	| { type: 'ask'; id: string; text: string; cwd: string; steer?: boolean }
+	/**
+	 * One completion outside the conversation: no transcript, tools or memory. `model` is an
+	 * id on the provider in use, the ghost's model without; `effort` a thinking level.
+	 */
+	| { type: 'quick'; text: string; system?: string; model?: string; effort?: ThinkingLevel }
 	| { type: 'abort' }
 	| { type: 'new'; handoff?: string }
 	| { type: 'status' }
@@ -16,6 +21,8 @@ export type Reply =
 	| TranscriptEvent
 	/** The ask with this `id` is answered or failed. */
 	| ({ type: 'settled' } & Settled)
+	/** The answer to a `quick`, to its client alone. */
+	| { type: 'quick'; text: string }
 	/** An `abort`, `new` or `login` is done. */
 	| { type: 'done'; request: 'abort' | 'new' | 'login' }
 	/** A step of a login in progress: the URL to open, a device code, progress. */
@@ -56,6 +63,16 @@ export function decoder(
 	}
 }
 
+/** The thinking levels a `quick` may name, pi-ai's. */
+export const THINKING_LEVELS: readonly ThinkingLevel[] = [
+	'minimal',
+	'low',
+	'medium',
+	'high',
+	'xhigh',
+	'max'
+]
+
 /** `message` as a request, or undefined when it is not one. */
 export function asRequest(message: unknown): Request | undefined {
 	if (typeof message !== 'object' || message === null) return undefined
@@ -67,6 +84,13 @@ export function asRequest(message: unknown): Request | undefined {
 				typeof m.text === 'string' &&
 				typeof m.cwd === 'string' &&
 				optional('steer', 'boolean')
+				? (m as Request)
+				: undefined
+		case 'quick':
+			return typeof m.text === 'string' &&
+				optional('system', 'string') &&
+				optional('model', 'string') &&
+				(m.effort === undefined || THINKING_LEVELS.includes(m.effort as ThinkingLevel))
 				? (m as Request)
 				: undefined
 		case 'new':

@@ -5,6 +5,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'ert)
 (require 'ghost)
 
@@ -297,6 +298,8 @@
              "echo 'ghost: a line on stderr' >&2\n"
              "echo '{\"type\":\"settled\",\"id\":\"x\",\"status\":\"done\","
              "\"text\":\"the answer\"}'\n"
+             "[ \"$1\" = quick ] && echo '{\"type\":\"quick\","
+             "\"text\":\"the quick answer\"}'\n"
              "[ \"$1\" = watch ] && exec sleep 30\n")
      nil program)
     (set-file-modes program #o755)
@@ -311,7 +314,8 @@
          (with-temp-buffer
            (insert "before:")
            (let ((marker (point-marker)))
-             (ghost--ask "-not an option" dir marker)
+             (ghost--ask "-not an option" dir
+                         (lambda (text) (ghost--insert-answer marker text)))
              (should (= ghost--asks 1))
              ;; The watch may have ended while the ask was written.
              (should (process-live-p ghost--watch))
@@ -322,6 +326,53 @@
                           (split-string (buffer-string) "\n" t))
                         (list (directory-file-name (file-truename dir))
                               "ask" "--json" "--" "-not an option"))))
+      (delete-directory dir t))))
+
+(defun ghost-test--args (dir command)
+  "The arguments the fake `ghost' in DIR logged for COMMAND, one per line."
+  (with-temp-buffer
+    (insert-file-contents (expand-file-name (concat command ".args") dir))
+    (goto-char (point-min))
+    (forward-line 1)
+    (string-trim-right (buffer-substring (point) (point-max)) "\n")))
+
+(ert-deftest ghost-test-defines-a-command-that-asks-quick-or-the-ghost ()
+  (let* ((dir (file-name-as-directory (make-temp-file "ghost-bin" t)))
+         (ghost-program (ghost-test--program dir))
+         (ghost-root dir)
+         (ghost-quick-effort "low")
+         (transient-mark-mode t)
+         (messages nil))
+    (ghost-define-command ghost-test-explain "Explain it." :model "mini")
+    (unwind-protect
+        (ghost-test--with-transcript
+         (cl-letf (((symbol-function 'message)
+                    (lambda (format &rest args)
+                      (push (apply #'format-message format args) messages)))
+                   ((symbol-function 'read-string)
+                    (lambda (_prompt &optional _initial _history default)
+                      default)))
+           (should (string-match-p "Ask the model: Explain it\\."
+                                   (documentation 'ghost-test-explain)))
+           (with-temp-buffer
+             (setq default-directory dir)
+             (insert " an apple ")
+             (set-mark (point-min))
+             (ghost-test-explain)
+             (with-timeout (5 (ert-fail "no quick answer"))
+               (while (not (member "the quick answer" messages))
+                 (accept-process-output nil 0.05)))
+             (should (equal (ghost-test--args dir "quick")
+                            (concat "quick\n--json\n--system\nExplain it.\n"
+                                    "--model\nmini\n--effort\nlow\n--\nan apple")))
+             ;; Without a region, the symbol at point is the default.
+             (deactivate-mark)
+             (goto-char 4)
+             (ghost-test-explain t)
+             (while (> ghost--asks 0) (accept-process-output nil 0.05))
+             (should (equal (ghost-test--args dir "ask")
+                            "ask\n--json\n--\nExplain it.\n\nan")))))
+      (fmakunbound 'ghost-test-explain)
       (delete-directory dir t))))
 
 (ert-deftest ghost-test-ends-the-watch-when-idle-and-hidden ()
