@@ -295,6 +295,21 @@
        (should-not (string-match-p "aaaa aaaa aaaa aaaa" narrow))
        (should (> (length (split-string narrow "\n")) 3))))))
 
+(ert-deftest ghost-test-draws-a-table-in-place-while-the-transcript-shows ()
+  (ghost-test--with-transcript
+   (ghost--show)
+   (let ((window (get-buffer-window "*ghost*")))
+     ;; A snapshot leaves the window's point at the start; shr lays table
+     ;; cells out in the selected window, which is another.
+     (ghost--event
+      (ghost-test--snapshot
+       (ghost-test--entry :id 1 :kind "user" :text "Compare" :askId "a")
+       (ghost-test--entry :id 2 :kind "assistant" :toolCalls [] :text "| a |"
+                          :html "<table><tr><td>cell</td></tr></table>")))
+     (should (string-match-p "\\`[0-9:]+ you › Compare\n[0-9:]+ ghost › \n *cell"
+                             (ghost-test--text)))
+     (delete-window window))))
+
 (ert-deftest ghost-test-shows-the-transcript-on-its-side ()
   (ghost-test--with-transcript
    (let ((ghost-window-side 'right))
@@ -433,6 +448,21 @@
          (should (equal (process-get proc 'ghost-pending) "{\"type\":")))
       (delete-process proc)
       (delete-directory root t))))
+
+(ert-deftest ghost-test-reads-on-past-a-line-that-fails ()
+  (let ((proc (make-pipe-process :name "ghost-test" :noquery t))
+        (debug-on-error nil)
+        (inhibit-message t)
+        (read nil))
+    (unwind-protect
+        (let ((fn (lambda (line)
+                    (when (equal line "bad") (error "Bad line"))
+                    (push line read))))
+          (ghost--lines proc "bad\nok\n{\"a\"" fn)
+          (ghost--lines proc ":1}\n" fn)
+          (should (equal (reverse read) '("ok" "{\"a\":1}")))
+          (should (equal (process-get proc 'ghost-pending) "")))
+      (delete-process proc))))
 
 (defun ghost-test--program (dir)
   "Write a fake `ghost' into DIR that logs its arguments and cwd per command."
