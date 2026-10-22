@@ -394,14 +394,14 @@ rest from the watch, which may have ended while the ask was written."
                                      out))))))))
 
 (defun ghost--lines (proc chunk fn)
-  "Call FN on each whole line PROC wrote, CHUNK being the newest part."
-  (let ((pending (concat (process-get proc 'ghost-pending) chunk))
-        (start 0))
-    ;; FN may search, which changes the match data.
-    (while-let ((end (string-search "\n" pending start)))
-      (funcall fn (substring pending start end))
-      (setq start (1+ end)))
-    (process-put proc 'ghost-pending (substring pending start))))
+  "Call FN on each whole line PROC wrote, CHUNK being the newest part.
+An error in FN is reported and skips only its line."
+  (let ((lines (split-string (concat (process-get proc 'ghost-pending) chunk)
+                             "\n")))
+    ;; Kept before FN runs: a line it fails on must not be read again.
+    (process-put proc 'ghost-pending (car (last lines)))
+    (dolist (line (butlast lines))
+      (with-demoted-errors "ghost: %S" (funcall fn line)))))
 
 (defun ghost--parse (line)
   "LINE as JSON: objects as alists, arrays as vectors, false and null nil."
@@ -1136,26 +1136,30 @@ paragraph starts on a line of its own."
 (defun ghost--shr (html)
   "HTML drawn by shr as wide as this buffer's window, trimmed of blank lines."
   (let ((width (ghost--shr-width)))
-    (with-temp-buffer
-      (insert html)
-      (let ((dom (libxml-parse-html-region (point-min) (point-max)))
-            ;; In the default font, as the asks and labels are, not shr's
-            ;; variable-pitch one; tables still line up, at `:align-to'.
-            (shr-use-fonts nil)
-            ;; Tables and rules are laid out to this; shr would take the
-            ;; selected window's width, which is not the sidebar's.
-            (shr-width width)
-            ;; Unfilled, for `visual-line-mode' to wrap at any width.
-            (shr-fill-text nil)
-            ;; An image as its alt text: shr would fetch it into this buffer,
-            ;; gone by the time it arrives.
-            (shr-inhibit-images t)
-            (shr-external-rendering-functions
-             (append '((pre . ghost--shr-pre) (table . ghost--shr-table))
-                     shr-external-rendering-functions)))
-        (erase-buffer)
-        (shr-insert-document dom))
-      (string-trim (buffer-string) "\n+" "\n+"))))
+    ;; shr lays each table cell out in the selected window; putting the
+    ;; windows back moves point in a buffer another window shows, as
+    ;; `*ghost*', to that window's point, away from where the answer goes.
+    (save-excursion
+      (with-temp-buffer
+        (insert html)
+        (let ((dom (libxml-parse-html-region (point-min) (point-max)))
+              ;; In the default font, as the asks and labels are, not shr's
+              ;; variable-pitch one; tables still line up, at `:align-to'.
+              (shr-use-fonts nil)
+              ;; Tables and rules are laid out to this; shr would take the
+              ;; selected window's width, which is not the sidebar's.
+              (shr-width width)
+              ;; Unfilled, for `visual-line-mode' to wrap at any width.
+              (shr-fill-text nil)
+              ;; An image as its alt text: shr would fetch it into this buffer,
+              ;; gone by the time it arrives.
+              (shr-inhibit-images t)
+              (shr-external-rendering-functions
+               (append '((pre . ghost--shr-pre) (table . ghost--shr-table))
+                       shr-external-rendering-functions)))
+          (erase-buffer)
+          (shr-insert-document dom))
+        (string-trim (buffer-string) "\n+" "\n+")))))
 
 (defun ghost--shr-width ()
   "The columns shr draws in: the body of this buffer's window, less the margin.
