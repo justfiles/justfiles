@@ -20,6 +20,8 @@
 ;;   `ghost-abort'        stop the turn in progress.
 ;;   `ghost-new'          start a new session with a handoff.
 ;;   `ghost-transcript'   show or hide `*ghost*'.
+;;   `ghost-clear'        hide what `*ghost*' shows so far, also after a
+;;                        restart; the ghost keeps it.  With C-u, show it.
 ;;
 ;; With `ghost-render-markdown', answers are drawn from their Markdown: the
 ;; CLI turns it into HTML, and shr draws that.
@@ -88,6 +90,10 @@ A command's `:effort' takes precedence; see `ghost-define-command'."
 It needs Emacs built with libxml2.  A change shows in the next watch:
 kill `*ghost*' to draw it again."
   :type 'boolean)
+
+(defcustom ghost-clear-file (locate-user-emacs-file "ghost-clear")
+  "The file that keeps the id of the newest entry `ghost-clear' hid."
+  :type 'file)
 
 (defcustom ghost-notify-functions nil
   "Functions called with an answer that arrived while `*ghost*' was hidden.
@@ -191,6 +197,13 @@ Nil keeps the line still, with only its time counting."
 
 (defvar ghost--name nil
   "The agent's name, from `ghost name'; nil until asked.")
+
+(defvar ghost--mark nil
+  "The id of the newest entry `ghost-clear' hid; nil when none is hidden.
+Read from `ghost-clear-file' when the watch starts.")
+
+(defvar ghost--last-id nil
+  "The id of the newest entry `*ghost*' was drawn from; nil before one.")
 
 ;;;; Asking
 
@@ -656,7 +669,8 @@ is live for one key."
     (add-hook 'window-buffer-change-functions #'ghost--windows-changed)
     (ghost--buffer)
     ;; A new watch may follow an edit of the soul.
-    (setq ghost--name nil)
+    (setq ghost--name nil
+          ghost--mark (ghost--read-mark))
     (setq ghost--watch
           (let ((default-directory (ghost--local-dir nil)))
             (make-process
@@ -765,10 +779,13 @@ is live for one key."
   "p" #'ghost-previous-turn
   "y" #'ghost-copy-answer
   "RET" #'ghost-ask
-  "TAB" #'ghost-toggle-call)
+  "TAB" #'ghost-toggle-call
+  "C-c M-o" #'ghost-clear)
 
 (define-derived-mode ghost-transcript-mode special-mode "Ghost"
   "The ghost's conversation, drawn from `ghost watch'.
+`ghost-clear' hides what it shows so far, from this view only: the
+ghost keeps it in its context.
 \\{ghost-transcript-mode-map}"
   (setq-local header-line-format '(:eval (ghost--header-line)))
   (add-hook 'kill-buffer-hook #'ghost--killed nil t)
@@ -779,7 +796,8 @@ is live for one key."
 The next watch starts with a snapshot, which draws a new `*ghost*'."
   (ghost--stop-watch)
   (when ghost--partial (set-marker ghost--partial nil))
-  (setq ghost--partial nil ghost--answering nil ghost--last-answer nil)
+  (setq ghost--partial nil ghost--answering nil ghost--last-answer nil
+        ghost--last-id nil)
   (clrhash ghost--calls))
 
 ;;;###autoload
@@ -882,21 +900,29 @@ The window stays through `delete-other-windows', as a sidebar does."
       (dolist (window windows) (set-window-point window (point-max))))))
 
 (defun ghost--render-snapshot (transcript)
-  "Draw TRANSCRIPT in `*ghost*', replacing what was there."
+  "Draw TRANSCRIPT in `*ghost*', replacing what was there.
+The entries `ghost-clear' hid are left out, under a line that says so."
   (ghost--write
    (lambda ()
      (remove-overlays)
      (erase-buffer)
      (clrhash ghost--calls)
      (when ghost--partial (set-marker ghost--partial nil))
-     (setq ghost--partial nil ghost--answering nil ghost--last-answer nil)
+     (setq ghost--partial nil ghost--answering nil ghost--last-answer nil
+           ghost--last-id nil)
      (let-alist transcript
-       (seq-do #'ghost--entry .entries)
+       (ghost--drop-stale-mark .entries)
+       (let ((hidden (seq-count #'ghost--hidden-p .entries)))
+         (when (> hidden 0) (ghost--hidden-line hidden)))
+       (seq-do (lambda (entry)
+                 (if (ghost--hidden-p entry) (ghost--skip entry) (ghost--entry entry)))
+               .entries)
        (when .partial (ghost--delta .partial))))))
 
 (defun ghost--entry (entry)
   "Insert ENTRY where entries go: at the end, before an answer being written."
   (let-alist entry
+    (setq ghost--last-id (max .id (or ghost--last-id .id)))
     ;; An answer replaces the text it was written as.
     (when (and (equal .kind "assistant") ghost--partial)
       (delete-region ghost--partial (point-max))
@@ -1069,6 +1095,70 @@ paragraph starts on a line of its own."
   (unless ghost--last-answer (user-error "No answer yet"))
   (kill-new ghost--last-answer)
   (message "Copied the last answer"))
+
+;;;; Clearing
+
+;; `ghost-clear' hides entries by id, which pi-durable keeps ordered across
+;; restarts; a count would shift when a reset or compaction drops entries.
+;; `*ghost*' keeps only drawn text, so a change of the mark draws it again
+;; from a new watch's snapshot.
+
+(defun ghost-clear (&optional all)
+  "Hide every entry `*ghost*' shows so far; with ALL, show them all again.
+Only the view changes: the ghost keeps them in its context, and
+`ghost-new' starts over.  What is hidden stays hidden after Emacs
+restarts, as `ghost-clear-file' keeps it."
+  (interactive "P")
+  (cond (all (ghost--drop-mark))
+        ((null ghost--last-id) (user-error "Nothing to clear"))
+        (t (with-temp-file ghost-clear-file
+             (insert (format "%d\n" ghost--last-id)))))
+  (ghost--stop-watch)
+  (ghost--ensure-watch))
+
+(defun ghost--read-mark ()
+  "The id in `ghost-clear-file'; nil when there is none."
+  (when (file-readable-p ghost-clear-file)
+    (with-temp-buffer
+      (insert-file-contents ghost-clear-file)
+      (let ((id (ignore-errors (read (current-buffer)))))
+        (and (integerp id) id)))))
+
+(defun ghost--drop-mark ()
+  "Show every entry again, from the next snapshot on."
+  (setq ghost--mark nil)
+  (when (file-exists-p ghost-clear-file) (delete-file ghost-clear-file)))
+
+(defun ghost--drop-stale-mark (entries)
+  "Drop the mark when ENTRIES are all older than it: the log was replaced.
+Kept, it would hide the new log's entries up to it."
+  (when (and ghost--mark
+             (< (apply #'max -1 (seq-map (lambda (entry) (alist-get 'id entry))
+                                         entries))
+                ghost--mark))
+    (ghost--drop-mark)))
+
+(defun ghost--hidden-p (entry)
+  "Non-nil when `ghost-clear' hid ENTRY."
+  (and ghost--mark (<= (alist-get 'id entry) ghost--mark)))
+
+(defun ghost--hidden-line (count)
+  "Insert the line saying COUNT entries are hidden, and how to show them."
+  (insert (propertize
+           (substitute-command-keys
+            (format "── %d earlier %s hidden · C-u %s shows them ──\n"
+                    count (if (= count 1) "entry" "entries")
+                    "\\<ghost-transcript-mode-map>\\[ghost-clear]"))
+           'face 'shadow)))
+
+(defun ghost--skip (entry)
+  "Follow the hidden ENTRY as `ghost--entry' does, without drawing it."
+  (let-alist entry
+    (setq ghost--last-id (max .id (or ghost--last-id .id)))
+    (pcase .kind
+      ("user" (setq ghost--answering (and .askId t)))
+      ("assistant" (unless (string-empty-p .text) (setq ghost--last-answer .text)))
+      ("reset" (setq ghost--answering nil)))))
 
 ;;;; The activity line
 

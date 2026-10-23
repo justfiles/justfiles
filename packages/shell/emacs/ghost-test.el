@@ -24,13 +24,17 @@
          (ghost--answering nil) (ghost--last-answer nil) (ghost--name "ghost")
          (ghost--calls (make-hash-table :test #'equal))
          (ghost--sending nil) (ghost--running nil) (ghost--activity nil)
-         (ghost--activity-overlay nil) (ghost--activity-timer nil))
+         (ghost--activity-overlay nil) (ghost--activity-timer nil)
+         (ghost--mark nil) (ghost--last-id nil)
+         (ghost-clear-file (make-temp-name
+                            (expand-file-name "ghost-clear" temporary-file-directory))))
      (when (get-buffer "*ghost*") (kill-buffer "*ghost*"))
      (unwind-protect (progn ,@body)
        (ghost--stop-watch)
        (when ghost--activity-timer (cancel-timer ghost--activity-timer))
        (when ghost--idle-timer (cancel-timer ghost--idle-timer))
-       (when (get-buffer "*ghost*") (kill-buffer "*ghost*")))))
+       (when (get-buffer "*ghost*") (kill-buffer "*ghost*"))
+       (when (file-exists-p ghost-clear-file) (delete-file ghost-clear-file)))))
 
 (defun ghost-test--text ()
   "The visible text of `*ghost*'."
@@ -556,7 +560,7 @@
       (delete-directory dir t))))
 
 (ert-deftest ghost-test-logs-quick-answers-and-shows-long-ones ()
-  (let ((messages nil) (ghost--quick-answer nil) (kill-ring nil))
+  (let ((messages nil) (ghost--quick-answer nil) (kill-ring nil) (ghost--name "ghost"))
     (when (get-buffer "*ghost quick*") (kill-buffer "*ghost quick*"))
     (unwind-protect
         (cl-letf (((symbol-function 'message)
@@ -649,6 +653,86 @@
            (should (equal (ghost--header-line) "not watching")))
          (when ghost--idle-timer (cancel-timer ghost--idle-timer)))
       (delete-directory dir t))))
+
+;;;; Clearing
+
+(ert-deftest ghost-test-hides-entries-up-to-the-mark ()
+  (ghost-test--with-transcript
+   (setq ghost--mark 2)
+   (ghost--event
+    (ghost-test--snapshot
+     (ghost-test--entry :id 1 :kind "assistant" :text "Old." :toolCalls [])
+     (ghost-test--entry :id 2 :kind "user" :text "Read it." :askId "a")
+     (ghost-test--entry :id 3 :kind "assistant" :text "Done." :toolCalls [])))
+   (should (string-match-p
+            (concat "\\`── 2 earlier entries hidden · C-u C-c M-o shows them ──\n"
+                    "[0-9:]+ ghost › Done\\.\n\\'")
+            (ghost-test--text)))
+   ;; Hidden, the ask still makes its answer an answer, not unasked.
+   (should-not (string-match-p "◆" (ghost-test--text)))
+   (should (= ghost--last-id 3))
+   (should (= ghost--mark 2))))
+
+(ert-deftest ghost-test-drops-a-mark-above-every-entry ()
+  (ghost-test--with-transcript
+   (write-region "10\n" nil ghost-clear-file)
+   (setq ghost--mark 10)
+   (ghost--event
+    (ghost-test--snapshot
+     (ghost-test--entry :id 1 :kind "user" :text "Hi" :askId "a")))
+   (should (string-match-p "\\`[0-9:]+ you › Hi\n\\'" (ghost-test--text)))
+   (should-not ghost--mark)
+   (should-not (file-exists-p ghost-clear-file))))
+
+(ert-deftest ghost-test-clears-the-transcript-and-shows-it-again ()
+  (let* ((dir (file-name-as-directory (make-temp-file "ghost-bin" t)))
+         (ghost-root dir)
+         (ghost-program (expand-file-name "ghost" dir)))
+    ;; Each watch starts with the same session, in the middle of an answer.
+    (write-region (concat "#!/bin/sh\n"
+                          "[ \"$1\" = name ] && echo ghost && exit\n"
+                          "echo '{\"type\":\"snapshot\",\"transcript\":{\"entries\":["
+                          "{\"id\":1,\"kind\":\"user\",\"text\":\"One\",\"askId\":\"a\"},"
+                          "{\"id\":2,\"kind\":\"assistant\",\"text\":\"Two\","
+                          "\"toolCalls\":[{\"id\":\"c1\",\"name\":\"read\",\"args\":{}}]}],"
+                          "\"partial\":\"Thr\"},"
+                          "\"status\":{\"busy\":true,\"queued\":0}}'\n"
+                          "exec sleep 30\n")
+                  nil ghost-program)
+    (set-file-modes ghost-program #o755)
+    (cl-flet ((snapshot ()
+                (with-timeout (5 (ert-fail "no snapshot"))
+                  (while (not ghost--status) (accept-process-output ghost--watch 0.05)))))
+      (unwind-protect
+          (ghost-test--with-transcript
+           (should-error (ghost-clear) :type 'user-error)
+           (ghost--ensure-watch)
+           (snapshot)
+           (ghost-clear)
+           (should (= (ghost--read-mark) 2))
+           (snapshot)
+           ;; The answer being written stays.
+           (should (string-match-p
+                    (concat "\\`── 2 earlier entries hidden · C-u C-c M-o shows them ──\n"
+                            "[0-9:]+ ghost › Thr\\'")
+                    (ghost-test--text)))
+           ;; What comes after shows below it; a result whose call is hidden
+           ;; shows the call.
+           (ghost--event `((type . "entry")
+                           (entry . ,(ghost-test--entry :id 3 :kind "tool" :callId "c1"
+                                                        :name "read" :text "x"))))
+           (ghost--event `((type . "entry")
+                           (entry . ,(ghost-test--entry :id 4 :kind "assistant"
+                                                        :text "Three." :toolCalls []))))
+           (should (string-match-p
+                    "shows them ──\n  ▸ read {}\n[0-9:]+ ghost › Three\\.\n\\'"
+                    (ghost-test--text)))
+           (ghost-clear t)
+           (should-not (file-exists-p ghost-clear-file))
+           (snapshot)
+           (should (string-match-p "\\`[0-9:]+ you › One\n[0-9:]+ ghost › Two\n"
+                                   (ghost-test--text))))
+        (delete-directory dir t)))))
 
 (provide 'ghost-test)
 ;;; ghost-test.el ends here
