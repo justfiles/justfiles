@@ -21,7 +21,7 @@
   "Run BODY with a fresh `*ghost*' and no watch."
   `(let ((ghost--watch nil) (ghost--status nil) (ghost--unseen nil)
          (ghost--idle-timer nil) (ghost--restart-timer nil) (ghost--asks 0) (ghost--partial nil)
-         (ghost--answering nil) (ghost--last-answer nil)
+         (ghost--answering nil) (ghost--last-answer nil) (ghost--name "ghost")
          (ghost--calls (make-hash-table :test #'equal))
          (ghost--sending nil) (ghost--running nil) (ghost--activity nil)
          (ghost--activity-overlay nil) (ghost--activity-timer nil))
@@ -371,7 +371,8 @@
      (should-not ghost--unseen))))
 
 (ert-deftest ghost-test-shows-the-status-in-the-header-line ()
-  (let ((ghost--status '((busy . t) (queued . 2)
+  (let ((ghost--name "ghost")
+        (ghost--status '((busy . t) (queued . 2)
                          (consolidation (from . "2026-10-20") (running)))))
     (should (equal (ghost--header-line)
                    "busy · 2 queued · notes since 2026-10-20 to consolidate"))
@@ -470,6 +471,7 @@
     (write-region
      (concat "#!/bin/sh\n"
              "printf '%s\\n' \"$(pwd -P)\" \"$@\" > \"$(dirname \"$0\")/$1.args\"\n"
+             "[ \"$1\" = name ] && echo ghost && exit\n"
              "echo '{\"type\":\"snapshot\",\"transcript\":{\"entries\":[]},"
              "\"status\":{\"busy\":true,\"queued\":0}}'\n"
              "echo 'ghost: a line on stderr' >&2\n"
@@ -584,6 +586,39 @@
           (ghost-quick-show)
           (should-not (get-buffer-window "*ghost quick*" t)))
       (when (get-buffer "*ghost quick*") (kill-buffer "*ghost quick*")))))
+
+(ert-deftest ghost-test-names-the-agent-with-ghost-name ()
+  (let* ((dir (file-name-as-directory (make-temp-file "ghost-bin" t)))
+         (ghost-root dir)
+         (ghost-program (expand-file-name "ghost" dir))
+         (fake (lambda (name)
+                 (write-region (concat "#!/bin/sh\n"
+                                       "[ \"$1\" = name ] && echo " name " && exit\n"
+                                       "exec sleep 30\n")
+                               nil ghost-program)
+                 (set-file-modes ghost-program #o755))))
+    (unwind-protect
+        (ghost-test--with-transcript
+         (setq ghost--name nil)
+         (funcall fake "Wisp")
+         (should (equal (ghost--name) "Wisp"))
+         (should (equal (ghost--prompt nil 'ask) "Ask Wisp: "))
+         (with-current-buffer (ghost--buffer)
+           (let ((inhibit-read-only t))
+             (ghost--entry (ghost-test--entry :id 1 :kind "assistant"
+                                              :text "Hello" :toolCalls []))))
+         (should (string-suffix-p "Wisp › Hello\n" (ghost-test--text)))
+         ;; Asked once: a renamed soul shows when the next watch starts.
+         (funcall fake "Fern")
+         (should (equal (ghost--name) "Wisp"))
+         (ghost--ensure-watch)
+         (should (equal (ghost--name) "Fern"))
+         (ghost--stop-watch)
+         (setq ghost--name nil ghost-program (expand-file-name "missing" dir))
+         (should (equal (ghost--name) "ghost"))
+         ;; Kept, so the mode line does not run the program on every redisplay.
+         (should (equal ghost--name "ghost")))
+      (delete-directory dir t))))
 
 (ert-deftest ghost-test-ends-the-watch-when-idle-and-hidden ()
   (let* ((dir (file-name-as-directory (make-temp-file "ghost-bin" t)))

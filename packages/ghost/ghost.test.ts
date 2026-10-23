@@ -13,6 +13,7 @@ import { memStore } from '@justfiles/fs/mem'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { openRotating } from './ghost.ts'
 import {
+	agentName,
 	type Ghost,
 	type GhostSettings,
 	openGhost,
@@ -393,6 +394,15 @@ describe('sections and memory notes', () => {
 		expect(prompts[0]).not.toContain('# about the user\n\n')
 		expect(prompts[0]).not.toContain('# permanent memory\n\n')
 		expect(prompts[0]).not.toContain('# memories of the past 2 days\n\n')
+	})
+
+	it("names the agent from its soul's frontmatter", async () => {
+		const world = volume(memStore())
+		expect(await agentName(world)).toBe('Computer')
+		await put(world, '/system/agents/main/soul.md', 'You are Wisp.\n\nagent_name: Wisp')
+		expect(await agentName(world)).toBe('Computer')
+		await put(world, '/system/agents/main/soul.md', '---\nagent_name: Wisp\n---\n\nYou are Wisp.')
+		expect(await agentName(world)).toBe('Wisp')
 	})
 
 	it("shows every shell's daily files for today and yesterday", async () => {

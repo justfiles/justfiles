@@ -1,9 +1,11 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { realpathSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { parseArgs } from 'node:util'
 import type { AuthEvent, ThinkingLevel } from '@earendil-works/pi-ai'
-import type { TranscriptEntry } from '@justfiles/ghost'
+import { agentName, type TranscriptEntry } from '@justfiles/ghost'
 import { connectOrStart, exchange, Lost } from './client.ts'
 import { withHtml } from './html.ts'
 import { main } from './main.ts'
@@ -18,6 +20,7 @@ const USAGE = `usage:
   ghost new [--handoff <text>]
   ghost abort
   ghost status
+  ghost name
   ghost login [--device]
   ghost serve`
 
@@ -166,6 +169,12 @@ async function run(argv: string[]): Promise<number> {
 				return true
 			})
 			return 0
+		case 'name': {
+			// The Volume's files are on disk under its root, so no daemon is needed to read the soul.
+			const root = volumeRoot(readSettings(dir))
+			console.log(await agentName({ readFile: (path) => readFile(join(root, path)) }))
+			return 0
+		}
 		case 'serve':
 			await main()
 			return 0
