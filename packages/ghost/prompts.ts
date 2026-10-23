@@ -5,10 +5,13 @@ import type { ShellRecord } from './types.ts'
 // expression.ts) and adjusted. Kept as strings, not .md files, because the shell runs this
 // package under plain node and bundles it into one binary, where there are no files to load.
 
+/** The agent's name when its soul's frontmatter has no `agent_name`, as in packages/agent. */
+export const DEFAULT_AGENT_NAME = 'Computer'
+
 // A missing soul IS the built-in persona, the same text packages/agent falls back to.
 export const DEFAULT_SOUL = `---
 schema: frieren/agent-soul/v1
-agent_name: Computer
+agent_name: ${DEFAULT_AGENT_NAME}
 seeded: true
 ---
 

@@ -3,6 +3,7 @@ import { LiveDoc, type PromptInput, type PromptSection, section } from '@earendi
 import type { Volume } from '@justfiles/fs'
 import * as paths from './paths.ts'
 import {
+	DEFAULT_AGENT_NAME,
 	DEFAULT_SOUL,
 	EXPRESSION_PROMPT,
 	filesystemPrompt,
@@ -149,6 +150,12 @@ async function skillsCatalogue(volume: Volume): Promise<string | undefined> {
 	return lines.length === 0 ? undefined : [SKILLS_PREAMBLE, ...lines].join('\n')
 }
 
+/** What the agent is called: `agent_name` in its soul's frontmatter. */
+export async function agentName(volume: Pick<Volume, 'readFile'>): Promise<string> {
+	const soul = (await readText(volume, paths.soul())) ?? DEFAULT_SOUL
+	return parseFrontmatter(soul).agent_name || DEFAULT_AGENT_NAME
+}
+
 /** A directory's entry names, sorted so the prompt is the same on every backend; none if missing. */
 export async function names(volume: Volume, dir: string): Promise<string[]> {
 	try {
@@ -160,7 +167,10 @@ export async function names(volume: Volume, dir: string): Promise<string[]> {
 }
 
 /** A file's text; undefined when it does not exist or is a directory. */
-export async function readText(volume: Volume, path: string): Promise<string | undefined> {
+export async function readText(
+	volume: Pick<Volume, 'readFile'>,
+	path: string
+): Promise<string | undefined> {
 	try {
 		return new TextDecoder().decode(await volume.readFile(path))
 	} catch (error) {

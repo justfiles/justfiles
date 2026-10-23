@@ -1,4 +1,5 @@
 export { openGhost } from './ghost.ts'
+export { agentName } from './sections.ts'
 export type {
 	Failure,
 	Ghost,

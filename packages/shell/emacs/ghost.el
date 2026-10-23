@@ -189,6 +189,9 @@ Nil keeps the line still, with only its time counting."
 (defvar ghost--quick-entry 1
   "In `*ghost quick*', where the newest entry starts.")
 
+(defvar ghost--name nil
+  "The agent's name, from `ghost name'; nil until asked.")
+
 ;;;; Asking
 
 ;;;###autoload
@@ -245,7 +248,7 @@ HOW is `ask', `steer', or a function called with the answer."
 
 (defun ghost--prompt (label how)
   "The minibuffer prompt for an ask sent as HOW, about LABEL when non-nil."
-  (concat (if (eq how 'steer) "Steer ghost" "Ask ghost")
+  (concat (if (eq how 'steer) "Steer " "Ask ") (ghost--name)
           (when (and (not (eq how 'steer))
                      (or (alist-get 'busy ghost--status)
                          (> (or (alist-get 'queued ghost--status) 0) 0)))
@@ -393,6 +396,17 @@ rest from the watch, which may have ended while the ask was written."
                                        (concat "ghost: " done)
                                      out))))))))
 
+(defun ghost--name ()
+  "The agent's name, as `ghost name' reads it from the soul.
+\"ghost\" when that fails.  Asked once, and again after the watch starts."
+  (or ghost--name
+      (setq ghost--name
+            (or (let ((default-directory (ghost--local-dir nil)))
+                  (condition-case nil
+                      (car (process-lines ghost-program "name"))
+                    (error nil)))
+                "ghost"))))
+
 (defun ghost--lines (proc chunk fn)
   "Call FN on each whole line PROC wrote, CHUNK being the newest part.
 An error in FN is reported and skips only its line."
@@ -525,7 +539,7 @@ is live for one key."
       (unless (bobp) (insert "\n"))
       (setq ghost--quick-entry (point))
       (ghost--ask-entry nil nil text)
-      (ghost--label nil "ghost" nil)
+      (ghost--label nil (ghost--name) nil)
       (ghost--text answer html)))
   (let ((shown (if html (ghost--shr html) answer)))
     (if (ghost--fits-echo-p shown)
@@ -641,6 +655,8 @@ is live for one key."
     (add-to-list 'global-mode-string 'ghost-mode-line t)
     (add-hook 'window-buffer-change-functions #'ghost--windows-changed)
     (ghost--buffer)
+    ;; A new watch may follow an edit of the soul.
+    (setq ghost--name nil)
     (setq ghost--watch
           (let ((default-directory (ghost--local-dir nil)))
             (make-process
@@ -733,9 +749,8 @@ is live for one key."
   "The mode-line lighter: idle, busy, or an unseen answer."
   (when (or ghost--watch ghost--unseen)
     (let ((busy (alist-get 'busy ghost--status)))
-      (propertize (cond (ghost--unseen " ghost●")
-                        (busy " ghost…")
-                        (t " ghost"))
+      (propertize (concat " " (ghost--name)
+                          (cond (ghost--unseen "●") (busy "…")))
                   'face (cond (ghost--unseen 'ghost-unseen) (busy 'ghost-busy))
                   'help-echo "mouse-1: show or hide *ghost*"
                   'mouse-face 'mode-line-highlight
@@ -895,7 +910,7 @@ The window stays through `delete-other-windows', as a sidebar does."
        (setq ghost--answering (and .askId t)))
       ("assistant"
        (unless (string-empty-p .text)
-         (ghost--label .at "ghost" (not ghost--answering))
+         (ghost--label .at (ghost--name) (not ghost--answering))
          (ghost--text .text .html)
          (setq ghost--last-answer .text))
        (when .error
@@ -914,7 +929,7 @@ The window stays through `delete-other-windows', as a sidebar does."
   (goto-char (point-max))
   (unless ghost--partial
     (let ((start (point)))
-      (ghost--label nil "ghost" (not ghost--answering))
+      (ghost--label nil (ghost--name) (not ghost--answering))
       ;; Entries that come in meanwhile go before it: the marker moves past.
       (setq ghost--partial (copy-marker start t))))
   (insert delta))
