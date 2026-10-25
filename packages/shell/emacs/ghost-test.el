@@ -439,8 +439,13 @@
          (ghost--status '((busy) (queued . 0)))
          (ghost--avatar nil)
          (ghost-avatar 'compact)
-         (images t))
-    (cl-letf (((symbol-function 'display-images-p) (lambda (&optional _) images)))
+         (images t)
+         (svg t))
+    (cl-letf (((symbol-function 'display-images-p) (lambda (&optional _) images))
+              ((symbol-function 'image-type-available-p)
+               (let ((available (symbol-function 'image-type-available-p)))
+                 (lambda (type)
+                   (if (eq type 'svg) svg (funcall available type))))))
       (unwind-protect
           (progn
             ;; No avatar: the header line as without one, the name in banner.
@@ -469,6 +474,10 @@
             (setq images nil)
             (should (equal (ghost--header-line) "Wisp  idle"))
             (should-not (ghost-test--displays (ghost--header-line)))
+            (setq images t svg nil)
+            (should (equal (ghost--header-line) "Wisp  idle"))
+            (should-not (ghost-test--displays (ghost--header-line)))
+            (setq svg t)
             (setq images t ghost-avatar nil)
             (should (equal (ghost--header-line) "idle"))
             (should-not (ghost-test--displays (ghost--header-line))))

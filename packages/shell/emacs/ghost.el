@@ -902,7 +902,7 @@ In `banner' mode, see `ghost-avatar', the agent's name comes first."
 (defun ghost--avatar ()
   "The avatar image for `ghost-avatar', or nil when none shows.
 Built once per mode, and kept until the watch starts again."
-  (when (and ghost-avatar (display-images-p))
+  (when (and ghost-avatar (display-images-p) (image-type-available-p 'svg))
     (unless (eq (car ghost--avatar) ghost-avatar)
       (ghost--drop-avatar)
       (setq ghost--avatar
