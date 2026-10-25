@@ -26,6 +26,10 @@
 ;; With `ghost-render-markdown', answers are drawn from their Markdown: the
 ;; CLI turns it into HTML, and shr draws that.
 ;;
+;; The header line of `*ghost*' shows the status, and the agent's avatar at
+;; its right when there is one; `ghost-avatar' picks a compact or a banner
+;; header line, or none.
+;;
 ;; `ghost-define-command' defines commands that use the model as a function,
 ;; through `ghost quick': one completion outside the conversation, with the
 ;; command's prompt as the system prompt.  The answer is echoed, and kept in
@@ -38,6 +42,7 @@
 (require 'seq)
 (require 'shr)
 (require 'subr-x)
+(require 'svg)
 
 (defgroup ghost nil
   "The ghost, through its CLI."
@@ -105,6 +110,17 @@ answer; use it for a system notification."
   "The frames of the spinner on the activity line, one per character.
 Nil keeps the line still, with only its time counting."
   :type '(choice (string :tag "Frames") (const :tag "None" nil)))
+
+(defcustom ghost-avatar 'compact
+  "How `*ghost*' shows the agent's avatar, at the right of its header line.
+`compact' adds a small one to the status; `banner' makes a taller
+header line, with the agent's name before the status; nil shows none.
+The avatar is `system/agents/main/avatar.png' under `ghost-root'; a new
+one shows when the watch starts again."
+  :type '(choice (const compact) (const banner) (const :tag "None" nil))
+  :set (lambda (symbol value)
+         (set-default symbol value)
+         (force-mode-line-update t)))
 
 (defface ghost-time '((t :inherit shadow))
   "The time of a transcript entry.")
@@ -203,6 +219,10 @@ Nil keeps the line still, with only its time counting."
 
 (defvar ghost--name nil
   "The agent's name, from `ghost name'; nil until asked.")
+
+(defvar ghost--avatar nil
+  "The header line's avatar as (MODE . IMAGE), IMAGE nil without the file.
+Built for the `ghost-avatar' MODE, and again after the watch starts.")
 
 (defvar ghost--mark nil
   "The id of the newest entry `ghost-clear' hid; nil when none is hidden.
@@ -677,6 +697,7 @@ is live for one key."
     ;; A new watch may follow an edit of the soul.
     (setq ghost--name nil
           ghost--mark (ghost--read-mark))
+    (ghost--drop-avatar)
     (setq ghost--watch
           (let ((default-directory (ghost--local-dir nil)))
             (make-process
@@ -848,7 +869,22 @@ The window stays through `delete-other-windows', as a sidebar does."
     (ghost--seen)))
 
 (defun ghost--header-line ()
-  "The status snapshot, for the header line of `*ghost*'."
+  "The header line of `*ghost*': the status, and the avatar at its right.
+In `banner' mode, see `ghost-avatar', the agent's name comes first."
+  (let ((left (if (eq ghost-avatar 'banner)
+                  (concat (propertize (ghost--name) 'face 'ghost-label)
+                          "  " (ghost--status-line))
+                (ghost--status-line)))
+        (avatar (ghost--avatar)))
+    (if (null avatar)
+        left
+      (concat left
+              ;; Redisplay measures the image's width, in the window's frame.
+              (propertize " " 'display `(space :align-to (- right ,avatar)))
+              (propertize " " 'display avatar)))))
+
+(defun ghost--status-line ()
+  "The status snapshot, in a line."
   (if (null ghost--status)
       "not watching"
     (let-alist ghost--status
@@ -862,6 +898,35 @@ The window stays through `delete-other-windows', as a sidebar does."
                           (format "notes since %s to consolidate"
                                   .consolidation.from)))))
        " · "))))
+
+(defun ghost--avatar ()
+  "The avatar image for `ghost-avatar', or nil when none shows.
+Built once per mode, and kept until the watch starts again."
+  (when (and ghost-avatar (display-images-p) (image-type-available-p 'svg))
+    (unless (eq (car ghost--avatar) ghost-avatar)
+      (ghost--drop-avatar)
+      (setq ghost--avatar
+            (cons ghost-avatar
+                  (ghost--avatar-image
+                   (expand-file-name "system/agents/main/avatar.png" ghost-root)
+                   (if (eq ghost-avatar 'banner) 3 1.5)))))
+    (cdr ghost--avatar)))
+
+(defun ghost--avatar-image (file height)
+  "FILE as a square with rounded corners, HEIGHT ems tall; nil when it is missing."
+  (when (file-readable-p file)
+    (let* ((size 100)
+           (svg (svg-create size size))
+           (clip (svg-clip-path svg :id "ghost-avatar")))
+      (svg-rectangle clip 0 0 size size :rx (/ size 5))
+      (svg-embed svg file "image/png" nil :width size :height size
+                 :clip-path "url(#ghost-avatar)")
+      (svg-image svg :height (cons height 'em) :ascent 'center))))
+
+(defun ghost--drop-avatar ()
+  "Forget the avatar, and flush it from the image cache so a new one shows."
+  (when (cdr ghost--avatar) (image-flush (cdr ghost--avatar) t))
+  (setq ghost--avatar nil))
 
 (defun ghost--event (event)
   "Apply one watch EVENT to `*ghost*' and the status."
