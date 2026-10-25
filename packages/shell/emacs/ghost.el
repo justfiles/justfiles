@@ -138,6 +138,9 @@ Nil keeps the line still, with only its time counting."
 (defface ghost-activity '((t :inherit shadow))
   "The activity line: what the ghost is doing, at the end of `*ghost*'.")
 
+(defface ghost-done '((t :inherit success))
+  "The line at the end of `*ghost*' that says the turn is done.")
+
 (defface ghost-unseen '((t :inherit success :weight bold))
   "The mode-line lighter when an answer arrived while `*ghost*' was hidden.")
 
@@ -188,6 +191,9 @@ Nil keeps the line still, with only its time counting."
 
 (defvar ghost--activity-timer nil
   "Redraws the activity line while there is a `ghost--activity'.")
+
+(defvar ghost--turn nil
+  "The ghost's turn as (START . END), END nil while it goes on; nil before one.")
 
 (defvar ghost--quick-answer nil
   "The text of the newest quick answer, for `ghost-quick-copy'.")
@@ -784,6 +790,8 @@ is live for one key."
 
 (define-derived-mode ghost-transcript-mode special-mode "Ghost"
   "The ghost's conversation, drawn from `ghost watch'.
+It keeps its end on the bottom line, as a chat does, until scrolled up
+or point moves away; a line at the end says when a turn is done.
 `ghost-clear' hides what it shows so far, from this view only: the
 ghost keeps it in its context.
 \\{ghost-transcript-mode-map}"
@@ -797,7 +805,7 @@ The next watch starts with a snapshot, which draws a new `*ghost*'."
   (ghost--stop-watch)
   (when ghost--partial (set-marker ghost--partial nil))
   (setq ghost--partial nil ghost--answering nil ghost--last-answer nil
-        ghost--last-id nil)
+        ghost--last-id nil ghost--turn nil)
   (clrhash ghost--calls))
 
 ;;;###autoload
@@ -825,16 +833,18 @@ The next watch starts with a snapshot, which draws a new `*ghost*'."
 The window stays through `delete-other-windows', as a sidebar does."
   (let ((buffer (ghost--buffer)))
     (unless (get-buffer-window buffer t)
-      (display-buffer buffer
-                      `((display-buffer-reuse-window
-                         display-buffer-in-side-window)
-                        (side . ,ghost-window-side)
-                        (,(if (eq ghost-window-side 'bottom)
-                              'window-height
-                            'window-width)
-                         . ,ghost-window-size)
-                        (window-parameters
-                         . ((no-delete-other-windows . t))))))
+      (when-let* ((window
+                   (display-buffer buffer
+                                   `((display-buffer-reuse-window
+                                      display-buffer-in-side-window)
+                                     (side . ,ghost-window-side)
+                                     (,(if (eq ghost-window-side 'bottom)
+                                           'window-height
+                                         'window-width)
+                                      . ,ghost-window-size)
+                                     (window-parameters
+                                      . ((no-delete-other-windows . t)))))))
+        (ghost--follow (list window))))
     (ghost--seen)))
 
 (defun ghost--header-line ()
@@ -858,7 +868,8 @@ The window stays through `delete-other-windows', as a sidebar does."
   (let-alist event
     (pcase .type
       ("snapshot"
-       (setq ghost--status .status ghost--running nil)
+       (setq ghost--status .status ghost--running nil
+             ghost--turn (and .status.busy (list (current-time))))
        (ghost--render-snapshot .transcript))
       ("entry"
        (when (equal .entry.kind "tool")
@@ -868,13 +879,21 @@ The window stays through `delete-other-windows', as a sidebar does."
       ("text" (ghost--write (lambda () (ghost--delta .delta))))
       ("tool" (push (cons .callId .name) ghost--running))
       ("status"
-       (setq ghost--status .status)
+       (ghost--set-status .status)
        (unless (alist-get 'busy .status) (setq ghost--running nil))
        (unless (ghost--visible-p) (ghost--arm-idle)))
       ("error" (message "ghost: %s" .message)))
     (when (alist-get 'busy ghost--status) (setq ghost--sending nil)))
   (ghost--update-activity)
   (force-mode-line-update t))
+
+(defun ghost--set-status (status)
+  "Take STATUS as the ghost's, timing its turn from busy to idle."
+  (let ((was (alist-get 'busy ghost--status))
+        (busy (alist-get 'busy status)))
+    (cond ((and busy (not was)) (setq ghost--turn (list (current-time))))
+          ((and was (not busy) ghost--turn) (setcdr ghost--turn (current-time)))))
+  (setq ghost--status status))
 
 (defun ghost--arrived (entry)
   "Mark ENTRY and pass it to `ghost-notify-functions' if it is a hidden answer."
@@ -889,15 +908,30 @@ The window stays through `delete-other-windows', as a sidebar does."
 (defun ghost--write (fn)
   "Call FN in `*ghost*', writable; windows that showed its end follow it."
   (with-current-buffer (ghost--buffer)
-    (let* ((inhibit-read-only t)
-           (end (point-max))
-           (follow (= (point) end))
-           (windows (seq-filter (lambda (window)
-                                  (= (window-point window) end))
-                                (get-buffer-window-list nil nil t))))
+    (let ((inhibit-read-only t)
+          (follow (= (point) (point-max)))
+          (windows (ghost--followers)))
       (save-excursion (funcall fn))
       (when follow (goto-char (point-max)))
-      (dolist (window windows) (set-window-point window (point-max))))))
+      (ghost--follow windows))))
+
+(defun ghost--followers ()
+  "The windows of `*ghost*' that show its end, which follow what comes in.
+One scrolled up from the end is left where the user put it, as is the
+selected one with point moved away from the end."
+  (let ((end (point-max)))
+    (seq-filter (lambda (window)
+                  (if (eq window (selected-window))
+                      (= (window-point window) end)
+                    (pos-visible-in-window-p end window t)))
+                (get-buffer-window-list nil nil t))))
+
+(defun ghost--follow (windows)
+  "Show the end of `*ghost*' on the bottom line of WINDOWS, with point there."
+  (dolist (window windows)
+    (with-selected-window window
+      (goto-char (point-max))
+      (recenter -1))))
 
 (defun ghost--render-snapshot (transcript)
   "Draw TRANSCRIPT in `*ghost*', replacing what was there.
@@ -1174,7 +1208,7 @@ Kept, it would hide the new log's entries up to it."
           ((and (not label) ghost--activity-timer)
            (cancel-timer ghost--activity-timer)
            (setq ghost--activity-timer nil)))
-    (ghost--draw-activity)))
+    (ghost--draw-activity t)))
 
 (defun ghost--activity-label ()
   "What the ghost is doing: a label, `writing', or nil when nothing."
@@ -1186,11 +1220,13 @@ Kept, it would hide the new log's entries up to it."
         (ghost--partial 'writing)
         (t "thinking")))
 
-(defun ghost--draw-activity ()
-  "Draw `ghost--activity' at the end of `*ghost*', or take it away."
+(defun ghost--draw-activity (&optional follow)
+  "Draw `ghost--activity' at the end of `*ghost*', or take it away.
+With FOLLOW, windows that showed the end follow it."
   (when-let* ((buffer (get-buffer "*ghost*")))
     (with-current-buffer buffer
-      (let ((text (ghost--activity-text)))
+      (let ((text (ghost--activity-text))
+            (windows (and follow (ghost--followers))))
         (cond (text
                ;; A snapshot removes every overlay, ours too.
                (unless (and ghost--activity-overlay
@@ -1200,28 +1236,41 @@ Kept, it would hide the new log's entries up to it."
                (overlay-put ghost--activity-overlay 'after-string text))
               (ghost--activity-overlay
                (delete-overlay ghost--activity-overlay)
-               (setq ghost--activity-overlay nil)))))))
+               (setq ghost--activity-overlay nil)))
+        (ghost--follow windows)))))
 
 (defun ghost--activity-text ()
-  "The activity line for `ghost--activity', in the current buffer; nil without one."
-  (pcase-let ((`(,label . ,since) ghost--activity))
-    (cond ((null label) nil)
-          ((eq label 'writing) (propertize "▍" 'face 'ghost-activity))
-          (t
-           (let ((seconds (floor (float-time (time-since since))))
-                 (frame (if ghost-spinner
+  "The activity line for `ghost--activity', in the current buffer.
+Without one, the line that says the last turn is done; nil before a turn.
+It ends without a newline: after one, `recenter' would not put it on the
+bottom line."
+  (pcase-let ((`(,label . ,since) ghost--activity)
+              (`(,start . ,end) ghost--turn))
+    (cond ((eq label 'writing) (propertize "▍" 'face 'ghost-activity))
+          (label
+           (let ((frame (if ghost-spinner
                             (string (aref ghost-spinner
                                           (mod (floor (* 10 (float-time)))
                                                (length ghost-spinner))))
                           "…")))
-             (propertize
-              (format "%s  %s %s · %s\n"
-                      (if (memq (char-before (point-max)) '(nil ?\n)) "" "\n")
-                      frame label
-                      (if (< seconds 60)
-                          (format "%ds" seconds)
-                        (format "%dm %02ds" (/ seconds 60) (% seconds 60))))
-              'face 'ghost-activity))))))
+             (ghost--end-line (format "%s %s · %s" frame label
+                                      (ghost--duration since))
+                              'ghost-activity)))
+          (end (ghost--end-line (format "✓ done · %s" (ghost--duration start end))
+                                'ghost-done)))))
+
+(defun ghost--end-line (text face)
+  "TEXT in FACE as a line of its own at the end of the current buffer."
+  (propertize (concat (if (memq (char-before (point-max)) '(nil ?\n)) "" "\n")
+                      "  " text)
+              'face face))
+
+(defun ghost--duration (since &optional until)
+  "The time from SINCE to UNTIL, else to now, as 5s or 1m 15s."
+  (let ((seconds (floor (float-time (time-subtract until since)))))
+    (if (< seconds 60)
+        (format "%ds" seconds)
+      (format "%dm %02ds" (/ seconds 60) (% seconds 60)))))
 
 ;;;; Markdown
 

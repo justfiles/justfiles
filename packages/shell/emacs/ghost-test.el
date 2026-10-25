@@ -24,7 +24,7 @@
          (ghost--answering nil) (ghost--last-answer nil) (ghost--name "ghost")
          (ghost--calls (make-hash-table :test #'equal))
          (ghost--sending nil) (ghost--running nil) (ghost--activity nil)
-         (ghost--activity-overlay nil) (ghost--activity-timer nil)
+         (ghost--activity-overlay nil) (ghost--activity-timer nil) (ghost--turn nil)
          (ghost--mark nil) (ghost--last-id nil)
          (ghost-clear-file (make-temp-name
                             (expand-file-name "ghost-clear" temporary-file-directory))))
@@ -123,16 +123,16 @@
      ;; Sent, before the ghost takes it up.
      (setq ghost--sending t)
      (ghost--update-activity)
-     (should (equal (ghost-test--activity) "  … sending · 0s\n"))
+     (should (equal (ghost-test--activity) "  … sending · 0s"))
      (ghost--event '((type . "status") (status (busy . t) (queued . 0))))
      (ghost--event `((type . "entry")
                      (entry . ,(ghost-test--entry :id 1 :kind "user" :text "Hi"
                                                   :askId "a"))))
      (should-not ghost--sending)
-     (should (equal (ghost-test--activity) "  … thinking · 0s\n"))
+     (should (equal (ghost-test--activity) "  … thinking · 0s"))
      (setcdr ghost--activity (time-subtract nil 75))
      (ghost--draw-activity)
-     (should (equal (ghost-test--activity) "  … thinking · 1m 15s\n"))
+     (should (equal (ghost-test--activity) "  … thinking · 1m 15s"))
      ;; While it writes, a cursor after the text.
      (ghost--event '((type . "text") (delta . "Let me look")))
      (should (equal (ghost-test--activity) "▍"))
@@ -143,18 +143,52 @@
                                             ((id . "c2") (name . "read") (args))]))))
      (ghost--event '((type . "tool") (callId . "c1") (name . "bash")))
      (ghost--event '((type . "tool") (callId . "c2") (name . "read")))
-     (should (equal (ghost-test--activity) "  … running bash, read · 0s\n"))
+     (should (equal (ghost-test--activity) "  … running bash, read · 0s"))
      (ghost--event `((type . "entry")
                      (entry . ,(ghost-test--entry :id 3 :kind "tool" :callId "c1"
                                                   :name "bash" :text "ok"))))
-     (should (equal (ghost-test--activity) "  … running read · 0s\n"))
+     (should (equal (ghost-test--activity) "  … running read · 0s"))
      ;; A snapshot drops the overlay, and the next draw makes it again.
      (ghost--event `((type . "snapshot") (transcript (entries . []))
                      (status (busy . t) (queued . 0))))
-     (should (equal (ghost-test--activity) "  … thinking · 0s\n"))
+     (should (equal (ghost-test--activity) "  … thinking · 0s"))
+     ;; Done, it says so, timed from when the turn began.
+     (setcar ghost--turn (time-subtract nil 75))
      (ghost--event '((type . "status") (status (busy) (queued . 0))))
-     (should-not (ghost-test--activity))
-     (should-not ghost--activity-timer))))
+     (should (equal (ghost-test--activity) "  ✓ done · 1m 15s"))
+     (should-not ghost--activity-timer)
+     ;; A new watch starts without it.
+     (ghost--event (ghost-test--snapshot))
+     (should-not (ghost-test--activity)))))
+
+(ert-deftest ghost-test-keeps-the-end-in-view-unless-moved-away ()
+  ;; Batch Emacs sees no position as visible, so only the selected window
+  ;; follows here, by its point.
+  (ghost-test--with-transcript
+   (ghost--show)
+   (let ((window (get-buffer-window "*ghost*"))
+         (id 0))
+     (cl-flet ((ask () (ghost--event
+                        `((type . "entry")
+                          (entry . ,(ghost-test--entry :id (cl-incf id) :kind "user"
+                                                       :text "Hi" :askId "a"))))))
+       (with-selected-window window
+         (ghost--event (ghost-test--snapshot))
+         (dotimes (_ 100) (ask))
+         ;; The end on the bottom line, not the middle: the empty line
+         ;; after the last entry, with point on it.
+         (should (= (point) (point-max)))
+         (should (= (1+ (count-screen-lines (window-start) (point-max)))
+                    (window-body-height)))
+         ;; Moved away, point stays.
+         (goto-char (point-min))
+         (ask)
+         (should (= (point) (point-min)))
+         ;; Back at the end, it follows again.
+         (goto-char (point-max))
+         (ask)
+         (should (= (point) (point-max)))))
+     (delete-window window))))
 
 (ert-deftest ghost-test-forgets-the-transcript-when-its-buffer-is-killed ()
   (ghost-test--with-transcript
