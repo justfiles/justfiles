@@ -5,7 +5,8 @@ import type { Settled, TranscriptEvent } from '@justfiles/ghost'
 // ghost's watch stream from the start, snapshot first.
 
 export type Request =
-	| { type: 'ask'; id: string; text: string; cwd: string; steer?: boolean }
+	/** `context` says where the user asked from; the model reads it beside `text`. */
+	| { type: 'ask'; id: string; text: string; cwd: string; context?: string; steer?: boolean }
 	/**
 	 * One completion outside the conversation: no transcript, tools or memory. `model` is an
 	 * id on the provider in use, the ghost's model without; `effort` a thinking level.
@@ -83,6 +84,7 @@ export function asRequest(message: unknown): Request | undefined {
 			return typeof m.id === 'string' &&
 				typeof m.text === 'string' &&
 				typeof m.cwd === 'string' &&
+				optional('context', 'string') &&
 				optional('steer', 'boolean')
 				? (m as Request)
 				: undefined

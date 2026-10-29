@@ -251,6 +251,53 @@ describe('openGhost', () => {
 		expect(users).toHaveLength(1)
 	})
 
+	it("sends an ask's context beside its words, and keeps the two apart", async () => {
+		const state = await openNodeSqliteState(':memory:')
+		const ghost = await openGhost(depsOn(state, volume(memStore())))
+		open.push(ghost)
+		const sent: unknown[] = []
+		faux.setResponses([
+			(context) => {
+				sent.push(context.messages.at(-1))
+				return fauxAssistantMessage('committed')
+			},
+			(context) => {
+				sent.push(context.messages.at(-1))
+				return fauxAssistantMessage('hi')
+			}
+		])
+		const where =
+			'From Emacs: /Users/me/code/repo/a.ts (on this machine, outside the Volume), line 42'
+
+		await ghost.ask('commit the staged', { id: 'c', cwd: '/', context: where })
+		await ghost.ask('hello', { id: 'h' })
+
+		expect(sent).toMatchObject([
+			{
+				role: 'user',
+				content: [
+					{ type: 'text', text: 'commit the staged' },
+					{ type: 'text', text: where }
+				]
+			},
+			{ role: 'user', content: 'hello' }
+		])
+		const rows = await state.all<{ record: string }>('SELECT record FROM entries ORDER BY id')
+		const asks = rows
+			.map((row) => JSON.parse(row.record))
+			.filter((entry) => entry.kind === 'ghost.ask')
+		expect(asks.map((entry) => entry.data)).toEqual([
+			{ id: 'c', cwd: '/', context: where },
+			{ id: 'h' }
+		])
+		const users = snapshotOf(ghost).transcript.entries.filter((entry) => entry.kind === 'user')
+		expect(users).toMatchObject([
+			{ text: 'commit the staged', askId: 'c', context: where },
+			{ text: 'hello', askId: 'h' }
+		])
+		expect(users[1]).not.toHaveProperty('context')
+	})
+
 	it('finishes a turn cut off by close when opened again', async () => {
 		const path = join(dir, 'state.sqlite')
 		let started!: () => void
@@ -844,6 +891,8 @@ apps. \`read\`, \`write\`, \`edit\` and \`bash\` see the Volume and nothing else
 shell over those files with no real processes: it has \`ls\`, \`cat\`, \`rg\`, \`jq\`, \`sed\` and
 the like, but it cannot run programs such as \`npm\`, \`git\` or \`python\`.
 \`emacs\` reach this device itself, outside the Volume: real processes, real apps, the real filesystem. Use them when the work needs the machine, not the files.
+An ask may come with a line of context from the user's editor saying where they asked from;
+a path there marked as on this machine is outside the Volume, for \`bash\` to \`cd\` to.
 
 ## This shell`
 		)
@@ -924,6 +973,21 @@ describe('transcript mirror, shell record and transcript tool', () => {
 		])
 		const ids = lines.map((line) => line.id)
 		expect(ids).toEqual([...new Set(ids)].sort((a, b) => a - b))
+	})
+
+	it("mirrors an ask's context apart from its words", async () => {
+		const world = volume(memStore())
+		faux.setResponses([fauxAssistantMessage('done')])
+
+		const ghost = await openOn(':memory:', undefined, world)
+		await ghost.ask('What does this do?', { id: '1', context: 'From Emacs: /notes/a.md, line 3' })
+		await ghost.close()
+
+		expect((await mirrorOf(world))[0]).toMatchObject({
+			kind: 'user',
+			text: 'What does this do?',
+			context: 'From Emacs: /notes/a.md, line 3'
+		})
 	})
 
 	it('dates the entries watchers see, in the snapshot too', async () => {

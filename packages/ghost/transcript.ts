@@ -1,7 +1,10 @@
 import type { AgentEvent, EntryRecord, SnapshotEvent, UsageState } from '@earendil-works/pi-durable'
 import type { GhostStatus, Transcript, TranscriptEntry, TranscriptEvent } from './types.ts'
 
-/** The entry kind of an ask: a user message whose data holds the asking client's cwd. */
+/**
+ * The entry kind of an ask: a user message whose data holds the asking client's cwd, and its
+ * context when it has one. With context, the message is two text blocks: the words, then it.
+ */
 export const ASK = 'ghost.ask'
 
 type Content = readonly { type: string; text?: string }[] | string
@@ -143,15 +146,14 @@ function untimed(record: EntryRecord): TranscriptEntry | undefined {
 	const message = record.model?.[0]
 	const id = record.id
 	switch (record.kind) {
-		case ASK:
-			return message?.role === 'user'
-				? {
-						id,
-						kind: 'user',
-						text: text(message.content),
-						askId: (record.data as { id?: string } | undefined)?.id
-					}
-				: undefined
+		case ASK: {
+			if (message?.role !== 'user') return undefined
+			const data = record.data as { id?: string; context?: string } | undefined
+			if (data?.context === undefined)
+				return { id, kind: 'user', text: text(message.content), askId: data?.id }
+			const words = texts(message.content)[0] ?? ''
+			return { id, kind: 'user', text: words, askId: data.id, context: data.context }
+		}
 		case 'pi.assistant': {
 			if (message?.role !== 'assistant') return undefined
 			const toolCalls = message.content.flatMap((block) =>

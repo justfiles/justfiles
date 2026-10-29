@@ -90,11 +90,12 @@ export interface Ghost {
 	/**
 	 * Settles when the input is answered or fails, and rejects when the ghost closes first. A
 	 * retry with the same `id`, also after reopening, waits for the same input instead of
-	 * submitting it again.
+	 * submitting it again. `context` says where the user asked from; the model reads it beside
+	 * `text`, and the transcript keeps it apart.
 	 */
 	ask(
 		text: string,
-		opts: { id: string; whenBusy?: 'queue' | 'steer'; cwd?: string }
+		opts: { id: string; whenBusy?: 'queue' | 'steer'; cwd?: string; context?: string }
 	): Promise<Settled>
 	abort(): Promise<void>
 	/**
@@ -131,6 +132,8 @@ export type TranscriptEntry = (
 			text: string
 			/** The `id` the input was asked with. */
 			askId?: string
+			/** Where the user asked from, sent beside `text`. */
+			context?: string
 	  }
 	| {
 			id: number

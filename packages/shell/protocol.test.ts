@@ -37,6 +37,7 @@ describe('asRequest', () => {
 	it('accepts the six requests', () => {
 		for (const request of [
 			{ type: 'ask', id: 'a', text: 'hi', cwd: '/notes', steer: true },
+			{ type: 'ask', id: 'a', text: 'hi', cwd: '/', context: 'From Emacs: /notes/x.md, line 3' },
 			{ type: 'quick', text: 'hi', system: 'Explain.', model: 'gpt-6', effort: 'low' },
 			{ type: 'quick', text: 'hi' },
 			{ type: 'abort' },
@@ -53,6 +54,7 @@ describe('asRequest', () => {
 			'ask',
 			{ type: 'ask', id: 'a', text: 'hi' },
 			{ type: 'ask', id: 1, text: 'hi', cwd: '/' },
+			{ type: 'ask', id: 'a', text: 'hi', cwd: '/', context: ['From Emacs'] },
 			{ type: 'quick' },
 			{ type: 'quick', text: 'hi', effort: 'lots' },
 			{ type: 'quick', text: 'hi', model: 1 },
