@@ -14,7 +14,7 @@ import { type Reply, THINKING_LEVELS } from './protocol.ts'
 import { readSettings, volumeRoot } from './settings.ts'
 
 const USAGE = `usage:
-  ghost ask "<text>" [--steer] [--json]
+  ghost ask "<text>" [--context <text>] [--steer] [--json]
   ghost quick "<text>" [--system <text>] [--model <id>] [--effort <level>] [--json [--html]]
   ghost watch [--json [--html]]
   ghost new [--handoff <text>]
@@ -40,6 +40,7 @@ async function run(argv: string[]): Promise<number> {
 			model: { type: 'string' },
 			effort: { type: 'string' },
 			handoff: { type: 'string' },
+			context: { type: 'string' },
 			device: { type: 'boolean' }
 		}
 	})
@@ -55,6 +56,7 @@ async function run(argv: string[]): Promise<number> {
 				id: randomUUID(),
 				text,
 				cwd: cwd(dir),
+				...(values.context ? { context: values.context } : {}),
 				...(values.steer ? { steer: true } : {})
 			}
 			let failed = false

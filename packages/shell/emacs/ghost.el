@@ -23,6 +23,19 @@
 ;;   `ghost-clear'        hide what `*ghost*' shows so far, also after a
 ;;                        restart; the ghost keeps it.  With C-u, show it.
 ;;
+;; Every ask carries, beside its text, a line about where it was asked
+;; from: `ghost-context', which says the file and line, or the buffer.  The
+;; region follows it, when there is one.  Methods for other modes say more,
+;; dispatched on the major mode; this one, built in, names the repository:
+;;
+;;   (cl-defmethod ghost-context (&context (major-mode magit-mode))
+;;     (format "From Emacs: magit, the git repository %s, branch %s"
+;;             (ghost--where (directory-file-name (magit-toplevel)))
+;;             (magit-get-current-branch)))
+;;
+;; `*ghost*' draws the context dimmed under the ask, the region folded:
+;; TAB unfolds it.
+;;
 ;; With `ghost-render-markdown', answers are drawn from their Markdown: the
 ;; CLI turns it into HTML, and shr draws that.
 ;;
@@ -274,16 +287,17 @@ With COMPOSE, write the ask in a buffer instead."
 (defun ghost--start (compose how)
   "Read an ask, in a compose buffer when COMPOSE, and send it as HOW says.
 HOW is `ask', `steer', or a function called with the answer."
-  (let ((context (and (use-region-p) (ghost--region-context)))
-        (dir default-directory))
+  (let* ((region (and (use-region-p) (ghost--region-context)))
+         (context (ghost--join (ghost-context) (cdr region)))
+         (dir default-directory))
     (deactivate-mark)
     (ghost--ensure-watch)
     (if compose
-        (ghost--compose (cdr context) dir how)
-      (let ((text (read-string (ghost--prompt (car context) how)
+        (ghost--compose (car region) context dir how)
+      (let ((text (read-string (ghost--prompt (car region) how)
                                nil 'ghost-history)))
         (when (string-blank-p text) (user-error "Nothing to ask"))
-        (ghost--ask (ghost--join text (cdr context)) dir how)))))
+        (ghost--ask text dir how context)))))
 
 (defun ghost--prompt (label how)
   "The minibuffer prompt for an ask sent as HOW, about LABEL when non-nil."
@@ -295,9 +309,42 @@ HOW is `ask', `steer', or a function called with the answer."
           (when label (format " about %s" label))
           ": "))
 
-(defun ghost--join (text context)
-  "TEXT, followed by CONTEXT when there is one."
-  (if context (concat (string-trim-right text) "\n\n" context) text))
+(defun ghost--join (text more)
+  "TEXT, followed by MORE when there is one; either may be nil."
+  (if (and text more)
+      (concat (string-trim-right text) "\n\n" (string-trim-right more))
+    (or text more)))
+
+(cl-defgeneric ghost-context ()
+  "One line about where an ask from this buffer is asked from, or nil.
+Every ask carries it beside its text.  A method for a mode says more:
+`&context (major-mode MODE)' takes the modes derived from MODE too.")
+
+(cl-defmethod ghost-context ()
+  "The file and line of point, or the buffer when it visits no file."
+  (let ((file (buffer-file-name)))
+    (format "From Emacs: %s, line %d%s"
+            (if file (ghost--where file) (format "the buffer %s" (buffer-name)))
+            (line-number-at-pos nil t)
+            (if (and file (buffer-modified-p)) " (unsaved changes)" ""))))
+
+(declare-function magit-toplevel "magit-git")
+(declare-function magit-get-current-branch "magit-git")
+
+(cl-defmethod ghost-context (&context (major-mode magit-mode))
+  "The repository of a magit buffer and its branch.  Git knows what is staged."
+  (let ((top (magit-toplevel))
+        (branch (magit-get-current-branch)))
+    (if (not top)
+        (cl-call-next-method)
+      (format "From Emacs: magit, the git repository %s, %s"
+              (ghost--where (directory-file-name top))
+              (if branch (format "branch %s" branch) "detached HEAD")))))
+
+(defun ghost--where (file)
+  "FILE as the ghost reaches it: its Volume path, else its path on this machine."
+  (or (ghost--volume-path file)
+      (format "%s (on this machine, outside the Volume)" (expand-file-name file))))
 
 (defun ghost--region-context ()
   "The active region as (LABEL . TEXT): a header line and a fenced block."
@@ -308,10 +355,7 @@ HOW is `ask', `steer', or a function called with the answer."
          (name (cond (path path)
                      (file (abbreviate-file-name file))
                      (t (buffer-name))))
-         (where (cond (path path)
-                      (file (format "%s (on this machine, outside the Volume)"
-                                    name))
-                      (t (format "the buffer %s" name))))
+         (where (if file (ghost--where file) (format "the buffer %s" name)))
          ;; Lines of the file, also in a narrowed buffer.
          (first (line-number-at-pos beg t))
          ;; A region that ends at the start of a line ends on the line before.
@@ -348,8 +392,8 @@ HOW is `ask', `steer', or a function called with the answer."
           ((string-prefix-p root true)
            (concat "/" (substring true (length root)))))))
 
-(defun ghost--ask (text dir how)
-  "Send TEXT from DIR as HOW says; see `ghost--start'.
+(defun ghost--ask (text dir how &optional context)
+  "Send TEXT from DIR as HOW says, with CONTEXT beside it; see `ghost--start'.
 Only the answer's `settled' and errors are read here: `*ghost*' draws the
 rest from the watch, which may have ended while the ask was written."
   (ghost--ensure-watch)
@@ -359,6 +403,7 @@ rest from the watch, which may have ended while the ask was written."
      :name "ghost-ask"
      :command `(,ghost-program "ask" "--json"
                                ,@(and (eq how 'steer) '("--steer"))
+                               ,@(and context (list (concat "--context=" context)))
                                "--" ,text)
      :connection-type 'pipe
      :coding 'utf-8
@@ -507,7 +552,8 @@ TO-GHOST, an ask to the ghost that joins PROMPT and the text."
     (deactivate-mark)
     (when (string-empty-p text) (user-error "Nothing to ask"))
     (if to-ghost
-        (ghost--ask (ghost--join prompt text) default-directory 'ask)
+        (ghost--ask (ghost--join prompt text) default-directory 'ask
+                    (ghost-context))
       (message "ghost: thinking…")
       (ghost--quick text prompt
                     (lambda (answer html) (ghost--quick-answer text answer html))
@@ -638,7 +684,7 @@ is live for one key."
 ;;;; Composing
 
 (defvar-local ghost--compose-args nil
-  "In a compose buffer, the directory it asks from and how it sends.")
+  "In a compose buffer, the directory it asks from, how it sends, and the context.")
 
 (defvar-keymap ghost-compose-mode-map
   "C-c C-c" #'ghost-compose-send
@@ -649,21 +695,20 @@ is live for one key."
 \\[ghost-compose-send] sends it, \\[ghost-compose-cancel] throws it away."
   :lighter " Ghost-Compose")
 
-(defun ghost--compose (context dir how)
-  "Open a buffer to write an ask in, with CONTEXT, sent from DIR as HOW says."
+(defun ghost--compose (label context dir how)
+  "Open a buffer to write an ask in, sent from DIR as HOW says, with CONTEXT.
+The header line names LABEL, the region, when non-nil."
   (let ((buffer (generate-new-buffer "*ghost compose*")))
     (with-current-buffer buffer
       (if (fboundp 'markdown-mode) (markdown-mode) (text-mode))
       (ghost-compose-mode)
-      (setq ghost--compose-args (list dir how))
+      (setq ghost--compose-args (list dir how context))
       (setq header-line-format
             (substitute-command-keys
              (concat (if (eq how 'steer) "Steer the ghost" "Ask the ghost")
+                     (when label (format " about %s" label))
                      ": \\[ghost-compose-send] sends, "
-                     "\\[ghost-compose-cancel] cancels")))
-      (when context
-        (insert "\n\n" context)
-        (goto-char (point-min))))
+                     "\\[ghost-compose-cancel] cancels"))))
     (pop-to-buffer buffer)))
 
 (defun ghost-compose-send ()
@@ -673,7 +718,7 @@ is live for one key."
         (args ghost--compose-args))
     (when (string-empty-p text) (user-error "Nothing to ask"))
     (quit-window t)
-    (ghost--ask text (nth 0 args) (nth 1 args))))
+    (apply #'ghost--ask text args)))
 
 (defun ghost-compose-cancel ()
   "Throw away the ask in this buffer."
@@ -1031,7 +1076,7 @@ The entries `ghost-clear' hid are left out, under a line that says so."
     (pcase .kind
       ("user"
        (unless (bobp) (insert "\n"))
-       (ghost--ask-entry .at (not .askId) .text)
+       (ghost--ask-entry .at (not .askId) .text .context)
        (setq ghost--answering (and .askId t)))
       ("assistant"
        (unless (string-empty-p .text)
@@ -1071,11 +1116,19 @@ The entries `ghost-clear' hid are left out, under a line that says so."
                    " ")
            'ghost-turn t)))
 
-(defun ghost--ask-entry (at mark text)
-  "Insert an ask of TEXT at AT, with the MARK of an unasked entry, on `ghost-ask'."
+(defun ghost--ask-entry (at mark text &optional context)
+  "Insert an ask of TEXT at AT, with the MARK of an unasked entry, on `ghost-ask'.
+Its CONTEXT goes under it, dimmed: the first line, the rest folded."
   (let ((start (point)))
     (ghost--label at "you" mark)
     (ghost--text text)
+    (when context
+      (let* ((lines (split-string (string-trim context) "\n"))
+             (rest (string-trim (string-join (cdr lines) "\n")))
+             (key (unless (string-empty-p rest) (make-symbol "context"))))
+        (insert (propertize (concat (if key "  ▸ " "    ") (car lines) "\n")
+                            'face 'ghost-call 'ghost-call key))
+        (when key (ghost--fold key rest))))
     (add-face-text-property start (point) 'ghost-ask t)))
 
 (defun ghost--time (at)
@@ -1108,12 +1161,17 @@ paragraph starts on a line of its own."
                        (truncate-string-to-width
                         (string-replace "\n" " " args) 100 nil nil "…"))
                'face 'ghost-call 'ghost-call .id))
-      (let ((start (point)))
-        (insert (ghost--indent args))
-        (let ((overlay (make-overlay start (point))))
-          (overlay-put overlay 'invisible t)
-          (overlay-put overlay 'ghost-body t)
-          (puthash .id overlay ghost--calls))))))
+      (ghost--fold .id args))))
+
+(defun ghost--fold (key text)
+  "Insert TEXT indented and folded, the body of the line KEY names.
+`ghost-toggle-call' unfolds it."
+  (let ((start (point)))
+    (insert (ghost--indent text))
+    (let ((overlay (make-overlay start (point))))
+      (overlay-put overlay 'invisible t)
+      (overlay-put overlay 'ghost-body t)
+      (puthash key overlay ghost--calls))))
 
 (defun ghost--result (entry)
   "Fold the result ENTRY under its call; show the call too when it is gone."
@@ -1145,14 +1203,14 @@ paragraph starts on a line of its own."
           "\n"))
 
 (defun ghost-toggle-call ()
-  "Unfold the tool call at point, or fold it again."
+  "Unfold the tool call or the ask's context at point, or fold it again."
   (interactive)
   (let ((overlay
          (or (gethash (get-text-property (line-beginning-position) 'ghost-call)
                       ghost--calls)
              (seq-find (lambda (overlay) (overlay-get overlay 'ghost-body))
                        (overlays-at (point))))))
-    (unless overlay (user-error "No tool call here"))
+    (unless overlay (user-error "Nothing folded here"))
     (let ((inhibit-read-only t)
           (fold (not (overlay-get overlay 'invisible))))
       (overlay-put overlay 'invisible fold)

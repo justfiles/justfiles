@@ -501,7 +501,7 @@ async function open(
 	}
 
 	return {
-		async ask(input, { id, whenBusy = 'queue', cwd }) {
+		async ask(input, { id, whenBusy = 'queue', cwd, context: about }) {
 			// A retry answers from its record, and a steer belongs to the run it interrupts;
 			// a new queued ask may open the day first.
 			const known = await root.commit((tx) => tx.submissionByRequest(root.id, id), context)
@@ -509,9 +509,23 @@ async function open(
 			const submission = await root.submit(
 				{
 					type: 'input',
-					content: input,
+					// The context is a block of its own, so the transcript tells it from the words.
+					content:
+						about === undefined
+							? input
+							: [
+									{ type: 'text', text: input },
+									{ type: 'text', text: about }
+								],
 					// The input carries its own cwd, so overlapping asks never see each other's.
-					entry: { kind: ASK, data: cwd === undefined ? { id } : { id, cwd } },
+					entry: {
+						kind: ASK,
+						data: {
+							id,
+							...(cwd === undefined ? {} : { cwd }),
+							...(about === undefined ? {} : { context: about })
+						}
+					},
 					requestId: id,
 					whenBusy: whenBusy === 'steer' ? 'steer' : 'followUp'
 				},

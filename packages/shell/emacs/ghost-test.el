@@ -88,6 +88,34 @@
      (should-not (string-match-p "the notes" (ghost-test--text))))
    (should (equal ghost--last-answer "Done."))))
 
+(ert-deftest ghost-test-draws-an-asks-context-dimmed-with-the-region-folded ()
+  (ghost-test--with-transcript
+   (ghost--event
+    (ghost-test--snapshot
+     (ghost-test--entry :id 1 :kind "user" :text "What does this do?" :askId "a"
+                        :context (concat "From Emacs: /code/x.ts, line 2\n\n"
+                                         "From /code/x.ts, line 2:\n\n```ts\ntwo\n```\n"))
+     (ghost-test--entry :id 2 :kind "user" :text "And this?" :askId "b"
+                        :context "From Emacs: the buffer *scratch*, line 1")))
+   (should (string-match-p
+            (concat "you › What does this do\\?\n"
+                    "  ▸ From Emacs: /code/x.ts, line 2\n"
+                    "\n[0-9:]+ you › And this\\?\n"
+                    "    From Emacs: the buffer \\*scratch\\*, line 1\n\\'")
+            (ghost-test--text)))
+   (with-current-buffer "*ghost*"
+     (goto-char (point-min))
+     (search-forward "▸ From Emacs")
+     (should (memq 'ghost-call (ensure-list (get-text-property (point) 'face))))
+     (should (memq 'ghost-ask (ensure-list (get-text-property (point) 'face))))
+     (ghost-toggle-call)
+     (should (string-match-p
+              (concat "  ▾ From Emacs: /code/x.ts, line 2\n"
+                      "      From /code/x.ts, line 2:\n      \n      ```ts\n      two\n")
+              (ghost-test--text)))
+     (ghost-toggle-call)
+     (should-not (string-match-p "```" (ghost-test--text))))))
+
 (ert-deftest ghost-test-streams-an-answer-and-replaces-it-with-the-entry ()
   (ghost-test--with-transcript
    (ghost--event (ghost-test--snapshot
@@ -505,6 +533,54 @@
             (kill-buffer)))
       (delete-directory root t))))
 
+(ert-deftest ghost-test-says-where-an-ask-is-asked-from ()
+  (let* ((root (make-temp-file "ghost-root" t))
+         (ghost-root root)
+         (inside (expand-file-name "notes/a.md" root))
+         (outside (make-temp-file "ghost-outside" nil ".ts" "one\ntwo\n")))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory inside))
+          (write-region "one\ntwo\nthree\n" nil inside)
+          (with-current-buffer (find-file-noselect inside)
+            (forward-line 2)
+            (should (equal (ghost-context) "From Emacs: /notes/a.md, line 3"))
+            (insert "more ")
+            (should (equal (ghost-context)
+                           "From Emacs: /notes/a.md, line 3 (unsaved changes)"))
+            (set-buffer-modified-p nil)
+            (kill-buffer))
+          (with-current-buffer (find-file-noselect outside)
+            (forward-line 1)
+            (should (equal (ghost-context)
+                           (format "From Emacs: %s (on this machine, outside the Volume), line 2"
+                                   outside)))
+            (kill-buffer))
+          (with-temp-buffer
+            (rename-buffer "ghost-test notes" t)
+            (should (equal (ghost-context)
+                           (format "From Emacs: the buffer %s, line 1" (buffer-name))))))
+      (delete-file outside)
+      (delete-directory root t))))
+
+(ert-deftest ghost-test-says-which-repository-a-magit-buffer-shows ()
+  (let ((ghost-root (make-temp-file "ghost-root" t))
+        (defined (fboundp 'magit-mode)))
+    (unless defined
+      (define-derived-mode magit-mode special-mode "Magit"))
+    (define-derived-mode ghost-test-magit-status-mode magit-mode "Magit Status")
+    (unwind-protect
+        (cl-letf (((symbol-function 'magit-toplevel) (lambda () "/Users/me/code/repo/"))
+                  ((symbol-function 'magit-get-current-branch) (lambda () "main")))
+          (with-temp-buffer
+            (ghost-test-magit-status-mode)
+            (should (equal (ghost-context)
+                           (concat "From Emacs: magit, the git repository /Users/me/code/repo"
+                                   " (on this machine, outside the Volume), branch main")))))
+      (fmakunbound 'ghost-test-magit-status-mode)
+      (unless defined (fmakunbound 'magit-mode))
+      (delete-directory ghost-root t))))
+
 (ert-deftest ghost-test-counts-region-lines-from-the-top-of-a-narrowed-file ()
   (with-temp-buffer
     (insert "one\ntwo\nthree\nfour\n")
@@ -597,7 +673,8 @@
            (insert "before:")
            (let ((marker (point-marker)))
              (ghost--ask "-not an option" dir
-                         (lambda (text) (ghost--insert-answer marker text)))
+                         (lambda (text) (ghost--insert-answer marker text))
+                         "From Emacs: the buffer x, line 1")
              (should (= ghost--asks 1))
              ;; The watch may have ended while the ask was written.
              (should (process-live-p ghost--watch))
@@ -607,7 +684,9 @@
                           (insert-file-contents (expand-file-name "ask.args" dir))
                           (split-string (buffer-string) "\n" t))
                         (list (directory-file-name (file-truename dir))
-                              "ask" "--json" "--" "-not an option"))))
+                              "ask" "--json"
+                              "--context=From Emacs: the buffer x, line 1"
+                              "--" "-not an option"))))
       (delete-directory dir t))))
 
 (defun ghost-test--args (dir command)
@@ -653,7 +732,8 @@
              (ghost-test-explain t)
              (while (> ghost--asks 0) (accept-process-output nil 0.05))
              (should (equal (ghost-test--args dir "ask")
-                            "ask\n--json\n--\nExplain it.\n\nan")))))
+                            (concat "ask\n--json\n--context=From Emacs: the buffer "
+                                    (buffer-name) ", line 1\n--\nExplain it.\n\nan"))))))
       (fmakunbound 'ghost-test-explain)
       (when (get-buffer "*ghost quick*") (kill-buffer "*ghost quick*"))
       (delete-directory dir t))))

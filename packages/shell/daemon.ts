@@ -61,8 +61,9 @@ export async function serve(
 	async function handle(request: Request, send: (reply: Reply) => void, left: AbortSignal) {
 		switch (request.type) {
 			case 'ask': {
-				const { id, text, cwd, steer } = request
-				const settled = await ghost.ask(text, { id, cwd, whenBusy: steer ? 'steer' : 'queue' })
+				const { id, text, cwd, context, steer } = request
+				const whenBusy = steer ? 'steer' : 'queue'
+				const settled = await ghost.ask(text, { id, cwd, context, whenBusy })
 				return send({ type: 'settled', ...settled })
 			}
 			case 'quick': {

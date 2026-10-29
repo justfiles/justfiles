@@ -63,6 +63,8 @@ path for the other tools once that prefix is dropped.`
 	return `Everything you work on is files on one Volume you share with the user and their
 apps.${volume}${justBash}
 ${machine}${realBash}
+An ask may come with a line of context from the user's editor saying where they asked from;
+a path there marked as on this machine is outside the Volume, for \`bash\` to \`cd\` to.
 
 ## This shell
 
