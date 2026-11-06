@@ -9,7 +9,7 @@ import { agentName, type TranscriptEntry } from '@justfiles/ghost'
 import { connectOrStart, exchange, Lost } from './client.ts'
 import { withHtml } from './html.ts'
 import { main } from './main.ts'
-import { shellDir, volumeCwd } from './paths.ts'
+import { rulesFile, shellDir, volumeCwd } from './paths.ts'
 import { type Reply, THINKING_LEVELS } from './protocol.ts'
 import { readSettings, volumeRoot } from './settings.ts'
 
@@ -51,12 +51,20 @@ async function run(argv: string[]): Promise<number> {
 		case 'ask': {
 			const text = positionals.join(' ')
 			if (text === '') break
+			const root = volumeRootOnDisk(dir)
+			const here = process.cwd()
+			// The rules of where the ask is from join the context, the way Emacs names its file.
+			const rules = rulesFile(here)
+			const context = [
+				...(values.context ? [values.context] : []),
+				...(rules === undefined ? [] : [`the rules there are in ${where(rules, root)}`])
+			].join('; ')
 			const request = {
 				type: 'ask' as const,
 				id: randomUUID(),
 				text,
-				cwd: cwd(dir),
-				...(values.context ? { context: values.context } : {}),
+				cwd: volumeCwd(here, root),
+				...(context === '' ? {} : { context }),
 				...(values.steer ? { steer: true } : {})
 			}
 			let failed = false
@@ -185,13 +193,20 @@ async function run(argv: string[]): Promise<number> {
 	return 2
 }
 
-/** This directory as a Volume path; `/` outside the Volume. */
-function cwd(dir: string): string {
-	let root = volumeRoot(readSettings(dir))
+/** The Volume's root as a real path, resolved when it exists. */
+function volumeRootOnDisk(dir: string): string {
+	const root = volumeRoot(readSettings(dir))
 	try {
-		root = realpathSync(root)
-	} catch {}
-	return volumeCwd(process.cwd(), root)
+		return realpathSync(root)
+	} catch {
+		return root
+	}
+}
+
+/** A real path as the ghost reaches it: its Volume path, else its path on this machine. */
+function where(path: string, root: string): string {
+	const volumePath = volumeCwd(path, root)
+	return volumePath === '/' ? `${path} (on this machine, outside the Volume)` : volumePath
 }
 
 /** A login step for the person signing in; the sign-in page opens in their browser. */

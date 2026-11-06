@@ -11,7 +11,7 @@ const URL = /^[a-z][a-z\d+.-]*:/i
 export function openTool(root: string): Tool<{ target: string }> {
 	return {
 		name: 'open',
-		description: `Open a file or a URL on this device in its default app, as a double click would: a Volume path such as \`/notes/a.pdf\` (relative paths start from the directory the user asked from), or a URL such as \`https://…\` or \`mailto:…\`.`,
+		description: `Open a file or a URL on this device in its default app, as a double click would: a Volume path such as \`/docs/a.pdf\` (relative paths start from the directory the user asked from), or a URL such as \`https://…\` or \`mailto:…\`.`,
 		parameters: {
 			type: 'object',
 			properties: {

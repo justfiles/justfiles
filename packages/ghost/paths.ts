@@ -1,17 +1,20 @@
-// The Volume layout the ghost depends on, copied from packages/agent/paths.ts. Every reader
-// imports from here, and the filesystem map in prompts.ts is built from these, so the prose
-// and the code cannot drift.
+// The ghost's layout on its Volume: everything of the ghost's under one hidden folder, so a
+// person browsing the Volume does not meet it, `rg` skips it, and another agent given the same
+// files does not read the persona by accident. What every agent shares, the profile, the
+// memory, the daily notes and the skills, sits at `/.ghost`; what is one agent's, its soul,
+// avatar, transcripts and shell records, under `/.ghost/agents/<id>/`, `main` being the ghost.
+// Every reader imports from here, and the filesystem map in prompts.ts is built from these, so
+// the prose and the code cannot drift.
 
-export const NOTES_DIR = '/notes'
-export const PROFILE = '/system/user.md'
-export const MEMORY = '/system/memory/core.md'
-export const DAILY_DIR = '/system/memory/daily'
-export const SKILLS_DIR = '/system/skills'
-export const CONTEXT_DIR = '/system/context'
+export const GHOST_DIR = '/.ghost'
+export const PROFILE = `${GHOST_DIR}/user.md`
+export const MEMORY = `${GHOST_DIR}/core.md`
+export const DAILY_DIR = `${GHOST_DIR}/daily`
+export const SKILLS_DIR = `${GHOST_DIR}/skills`
 
 /** One daily file per day per shell, so every file has one writer. `day` is `YYYY-MM-DD`. */
 export const daily = (day: string, shellId: string) => `${DAILY_DIR}/${day}.${shellId}.md`
-export const agentDir = (agentId = 'main') => `/system/agents/${agentId}`
+export const agentDir = (agentId = 'main') => `${GHOST_DIR}/agents/${agentId}`
 export const soul = (agentId = 'main') => `${agentDir(agentId)}/soul.md`
 export const transcriptsDir = (agentId = 'main') => `${agentDir(agentId)}/transcripts`
 export const shellsDir = (agentId = 'main') => `${agentDir(agentId)}/shells`

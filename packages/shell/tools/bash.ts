@@ -32,7 +32,7 @@ interface Params {
 export function bashTool({ root, denied }: { root: string; denied: string }): Tool<Params> {
 	return {
 		name: 'bash',
-		description: `Run a command with real bash on this device: real processes, with the user's programs on PATH (git, node, pnpm, ws, herdr and the rest). \`$GHOST_VOLUME\` is the Volume's directory on this device: the Volume path \`/x\` is \`"$GHOST_VOLUME/x"\` here, and a bare \`/x\` is this device's own root. The command starts in the directory the user asked from. \`$GHOST_VOLUME/private\` cannot be read or written. Returns stdout and stderr together, cut to the last ${MAX_LINES} lines or ${MAX_BYTES / 1024}KB. Waits for the command to exit, and kills it after ${DEFAULT_TIMEOUT} seconds unless \`timeout\` gives another limit, so do not start background processes.`,
+		description: `Run a command with real bash on this device: real processes, with the user's programs on PATH (git, node, pnpm and the rest). \`$GHOST_VOLUME\` is the Volume's directory on this device: the Volume path \`/x\` is \`"$GHOST_VOLUME/x"\` here, and a bare \`/x\` is this device's own root. The command starts in the directory the user asked from. \`$GHOST_VOLUME/private\` cannot be read or written. Returns stdout and stderr together, cut to the last ${MAX_LINES} lines or ${MAX_BYTES / 1024}KB. Waits for the command to exit, and kills it after ${DEFAULT_TIMEOUT} seconds unless \`timeout\` gives another limit, so do not start background processes.`,
 		parameters: {
 			type: 'object',
 			properties: {

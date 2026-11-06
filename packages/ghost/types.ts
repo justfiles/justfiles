@@ -24,6 +24,12 @@ export interface GhostDeps {
 	 * write Volume paths under it there.
 	 */
 	tools?: Tool[]
+	/**
+	 * Volume paths no built-in file tool or `bash` command reads or writes, each a file or a
+	 * whole directory; none by default. For a host that leaves something in the Volume the
+	 * agent must not reach. The ghost's own footprint on a Volume is `/.ghost`.
+	 */
+	deny?: readonly string[]
 	settings?: GhostSettings
 }
 

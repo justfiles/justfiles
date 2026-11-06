@@ -6,11 +6,26 @@ import { dayInTz } from './timezone.ts'
 import { toEntry } from './transcript.ts'
 import type { ShellRecord, TranscriptEntry } from './types.ts'
 
-/** One line of a mirrored transcript: an entry and when it was said, as an ISO time. */
-export type MirroredEntry = TranscriptEntry & { at: string }
+/**
+ * One line of a mirrored transcript: an entry and when it was said, as an ISO time. The
+ * transcript is what syncs to every shell, so it is digest-grade: a tool call is kept as its
+ * name and the head of its input, and a tool result not at all. Tool results are the bulk of
+ * a conversation and where secrets pass through; the asks, the answers and the tool names
+ * recall it as well.
+ */
+export type MirroredEntry = (
+	| Exclude<TranscriptEntry, { kind: 'assistant' | 'tool' }>
+	| {
+			id: number
+			kind: 'assistant'
+			text: string
+			toolCalls: { id: string; name: string; input: string }[]
+			error?: string
+	  }
+) & { at: string }
 
-/** Of a tool result, what the mirror keeps. */
-const TOOL_TEXT_LIMIT = 2000
+/** Of a tool call's input, as JSON, what the mirror keeps. */
+const INPUT_LIMIT = 120
 
 interface MirrorDeps {
 	volume: Volume
@@ -66,7 +81,7 @@ export function createMirror({ volume, shellId, timeZone, scan }: MirrorDeps) {
 		}
 		for await (const record of scan(mark)) {
 			const entry = toEntry(record)
-			if (entry !== undefined) {
+			if (entry !== undefined && entry.kind !== 'tool') {
 				const at = new Date(entry.at ?? Date.now())
 				const said = dayInTz(at, timeZone)
 				if (day === undefined || said > day) day = said
@@ -117,11 +132,17 @@ export function parseLines(text: string): MirroredEntry[] {
 	return entries
 }
 
-function mirrored(entry: TranscriptEntry, at: Date): MirroredEntry {
-	const line = { at: at.toISOString(), ...entry }
-	if (line.kind === 'tool' && line.text.length > TOOL_TEXT_LIMIT)
-		line.text = `${line.text.slice(0, TOOL_TEXT_LIMIT)}… [${line.text.length - TOOL_TEXT_LIMIT} more characters]`
-	return line
+function mirrored(entry: Exclude<TranscriptEntry, { kind: 'tool' }>, at: Date): MirroredEntry {
+	if (entry.kind !== 'assistant') return { at: at.toISOString(), ...entry }
+	const toolCalls = entry.toolCalls.map(({ id, name, args }) => {
+		const input = JSON.stringify(args) ?? ''
+		return {
+			id,
+			name,
+			input: input.length > INPUT_LIMIT ? `${input.slice(0, INPUT_LIMIT)}…` : input
+		}
+	})
+	return { at: at.toISOString(), ...entry, toolCalls }
 }
 
 /** Write this shell's record: who it is, the tools it has, and now as when it was last seen. */

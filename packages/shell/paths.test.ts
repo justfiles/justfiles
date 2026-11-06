@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { devicePath, shellDir, volumeCwd } from './paths.ts'
+import { devicePath, rulesFile, shellDir, volumeCwd } from './paths.ts'
 
 describe('volumeCwd', () => {
 	const root = '/Users/me/files'
 
 	it('maps a directory under the root to its Volume path', () => {
-		expect(volumeCwd('/Users/me/files/notes', root)).toBe('/notes')
-		expect(volumeCwd('/Users/me/files/notes/2026/', root)).toBe('/notes/2026')
+		expect(volumeCwd('/Users/me/files/docs', root)).toBe('/docs')
+		expect(volumeCwd('/Users/me/files/docs/2026/', root)).toBe('/docs/2026')
 		expect(volumeCwd('/Users/me/files/..hidden', root)).toBe('/..hidden')
 	})
 
@@ -17,7 +17,7 @@ describe('volumeCwd', () => {
 
 	it('maps anything outside the root to /', () => {
 		expect(volumeCwd('/Users/me', root)).toBe('/')
-		expect(volumeCwd('/Users/me/files2/notes', root)).toBe('/')
+		expect(volumeCwd('/Users/me/files2/docs', root)).toBe('/')
 		expect(volumeCwd('/tmp', root)).toBe('/')
 		expect(volumeCwd('/', root)).toBe('/')
 	})
@@ -27,13 +27,35 @@ describe('devicePath', () => {
 	const root = '/Users/me/files'
 
 	it('maps a Volume path to its place under the root', () => {
-		expect(devicePath('/notes/a.md', root)).toBe('/Users/me/files/notes/a.md')
+		expect(devicePath('/docs/a.md', root)).toBe('/Users/me/files/docs/a.md')
 		expect(devicePath('/', root)).toBe('/Users/me/files')
 	})
 
 	it('stops `..` at the root', () => {
 		expect(devicePath('/../..', root)).toBe('/Users/me/files')
-		expect(devicePath('/notes/../../etc', root)).toBe('/Users/me/files/etc')
+		expect(devicePath('/docs/../../etc', root)).toBe('/Users/me/files/etc')
+	})
+})
+
+describe('rulesFile', () => {
+	const has =
+		(...files: string[]) =>
+		(path: string) =>
+			files.includes(path)
+
+	it('is the nearest AGENTS.md in the directory or above it', () => {
+		expect(rulesFile('/Users/me/ws/pages/2026', has('/Users/me/ws/AGENTS.md'))).toBe(
+			'/Users/me/ws/AGENTS.md'
+		)
+		expect(
+			rulesFile('/Users/me/ws/pages', has('/Users/me/ws/AGENTS.md', '/Users/me/ws/pages/AGENTS.md'))
+		).toBe('/Users/me/ws/pages/AGENTS.md')
+		expect(rulesFile('/Users/me/ws/', has('/Users/me/ws/AGENTS.md'))).toBe('/Users/me/ws/AGENTS.md')
+	})
+
+	it('is undefined when no directory up to the root has one', () => {
+		expect(rulesFile('/Users/me', has('/Users/me/ws/AGENTS.md'))).toBeUndefined()
+		expect(rulesFile('/', has())).toBeUndefined()
 	})
 })
 

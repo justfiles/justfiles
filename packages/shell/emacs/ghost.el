@@ -66,10 +66,6 @@
   "The `ghost' program."
   :type 'string)
 
-(defcustom ghost-ws-program "ws"
-  "The `ws' program, whose `ws path' turns a task id into its file."
-  :type 'string)
-
 (defcustom ghost-root "~/files"
   "The root of the ghost's Volume on disk, which Volume paths are under."
   :type 'directory)
@@ -128,7 +124,7 @@ Nil keeps the line still, with only its time counting."
   "How `*ghost*' shows the agent's avatar, at the right of its header line.
 `compact' adds a small one to the status; `banner' makes a taller
 header line, with the agent's name before the status; nil shows none.
-The avatar is `system/agents/main/avatar.png' under `ghost-root'; a new
+The avatar is `.ghost/agents/main/avatar.png' under `ghost-root'; a new
 one shows when the watch starts again."
   :type '(choice (const compact) (const banner) (const :tag "None" nil))
   :set (lambda (symbol value)
@@ -953,7 +949,7 @@ Built once per mode, and kept until the watch starts again."
       (setq ghost--avatar
             (cons ghost-avatar
                   (ghost--avatar-image
-                   (expand-file-name "system/agents/main/avatar.png" ghost-root)
+                   (expand-file-name ".ghost/agents/main/avatar.png" ghost-root)
                    (if (eq ghost-avatar 'banner) 3 1.5)))))
     (cdr ghost--avatar)))
 
@@ -1137,7 +1133,7 @@ Its CONTEXT goes under it, dimmed: the first line, the rest folded."
    "%H:%M" (and at (ignore-errors (encode-time (iso8601-parse at))))))
 
 (defun ghost--text (text &optional html)
-  "Insert TEXT and a newline, with buttons on its paths and task ids.
+  "Insert TEXT and a newline, with buttons on its paths.
 With HTML, TEXT is drawn from it; one that does not open with a
 paragraph starts on a line of its own."
   (let ((start (point)))
@@ -1519,17 +1515,13 @@ such as `global-auto-revert-mode', may change Emacs."
                               (button-get button 'ghost-line)))
   'help-echo "Open this file")
 
-(define-button-type 'ghost-task
-  'action (lambda (button) (ghost--open-task (button-get button 'ghost-task)))
-  'help-echo "Open this task")
-
 (defconst ghost--path-regexp
   (concat "\\(?:^\\|[[:space:]`'\"(\\[]\\)"
           "\\(\\(?:~/files\\)?/[^][[:space:]`'\"()<>,;]+\\)")
   "A Volume path or a path under ~/files, in group 1.")
 
 (defun ghost--buttonize (start end)
-  "Make buttons of the paths that exist and the task ids from START to END."
+  "Make buttons of the paths that exist from START to END."
   (save-excursion
     (goto-char start)
     (while (re-search-forward ghost--path-regexp end t)
@@ -1541,15 +1533,10 @@ such as `global-auto-revert-mode', may change Emacs."
              (file (ghost--real-path path)))
         (when (file-exists-p file)
           (make-text-button beg (+ beg (length text)) :type 'ghost-file
-                            'ghost-file file 'ghost-line line))))
-    (goto-char start)
-    (while (re-search-forward "\\_<\\([0-9]\\{8\\}T[0-9]\\{6\\}\\)\\_>" end t)
-      (unless (button-at (match-beginning 1))
-        (make-text-button (match-beginning 1) (match-end 1) :type 'ghost-task
-                          'ghost-task (match-string 1))))))
+                            'ghost-file file 'ghost-line line))))))
 
 (defun ghost--real-path (path)
-  "The file on disk for PATH, a Volume path or a path under ~/files."
+  "The file on disk for PATH, a Volume path or a path under the home directory."
   (if (string-prefix-p "~/" path)
       (expand-file-name path)
     (expand-file-name (substring path 1) ghost-root)))
@@ -1560,12 +1547,6 @@ such as `global-auto-revert-mode', may change Emacs."
   (when line
     (goto-char (point-min))
     (forward-line (1- line))))
-
-(defun ghost--open-task (id)
-  "Open the file of the task ID, the first that `ws path' prints."
-  (let ((file (car (ignore-errors (process-lines ghost-ws-program "path" id)))))
-    (unless file (user-error "`%s path %s' found nothing" ghost-ws-program id))
-    (find-file-other-window file)))
 
 (provide 'ghost)
 ;;; ghost.el ends here

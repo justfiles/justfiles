@@ -9,7 +9,7 @@ const TIMEOUT_MS = 30_000
 export function emacsTool(root: string): Tool<{ expression: string }> {
 	return {
 		name: 'emacs',
-		description: `Evaluate an Emacs Lisp expression in the user's running Emacs on this device with \`emacsclient --eval\`, and return the value Emacs prints. An error signalled in Emacs, or no Emacs server, comes back as an error with Emacs's message. Emacs sees real paths: the Volume path \`/x\` is \`${root}/x\` there. Use it to act in the user's editor, for example \`(find-file "${root}/notes/a.md")\`, to ask what they have open, or to run their own commands.`,
+		description: `Evaluate an Emacs Lisp expression in the user's running Emacs on this device with \`emacsclient --eval\`, and return the value Emacs prints. An error signalled in Emacs, or no Emacs server, comes back as an error with Emacs's message. Emacs sees real paths: the Volume path \`/x\` is \`${root}/x\` there. Use it to act in the user's editor, for example \`(find-file "${root}/docs/a.md")\`, to ask what they have open, or to run their own commands.`,
 		parameters: {
 			type: 'object',
 			properties: {

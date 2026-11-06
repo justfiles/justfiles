@@ -23,7 +23,7 @@ import type { BufferEncoding, FileContent, FsStat, IFileSystem } from 'just-bash
  *     watch-tick stale, which is fine.
  *   - link() (hard links) — Volume has no hard links; reject with ENOSYS.
  *
- * `deny` is a hard, uniform read boundary (the ghost denies `/private`): because every
+ * `deny` is a hard, uniform read boundary, the host's to draw: because every
  * command (cat, find, tar, jq…) reaches the Volume through this one object,
  * denying here cannot be routed around by a cleverer command line. It checks the path as
  * named and the path its symlinks lead to, so `ln -s / /alias` opens no way in either.
@@ -155,7 +155,7 @@ export function volumeFs(
 		},
 		mv: (src, dest) => guard(dest, () => guard(src, () => vol.rename(src, dest), false), false),
 		resolvePath: (base, path) => resolvePath(base, path),
-		// Drives glob expansion — filter, or `ls /system/**` enumerates the secrets.
+		// Drives glob expansion — filter, or `ls /**` enumerates what is denied.
 		getAllPaths: () => Array.from(paths).filter((p) => !denied(p)),
 		chmod: (path, mode) => guard(path, () => vol.chmod(path, mode)),
 		symlink: (target, linkPath) =>
