@@ -240,8 +240,8 @@ describe('denied prefixes', () => {
 		const vol = volume(memStore())
 		await vol.mkdir('/private/accounts', { recursive: true })
 		await vol.writeFile('/private/accounts/google.json', enc('{"token":"SECRET"}'))
-		await vol.mkdir('/system', { recursive: true })
-		await vol.writeFile('/system/user.md', enc('name: Ada\n'))
+		await vol.mkdir('/docs', { recursive: true })
+		await vol.writeFile('/docs/user.md', enc('name: Ada\n'))
 		const bash = new Bash({ fs: volumeFs(vol, DENY), cwd: '/' })
 		await flush()
 		return { vol, bash }
@@ -271,16 +271,16 @@ describe('denied prefixes', () => {
 		expect((await bash.exec('find /host')).stdout).not.toContain('accounts')
 		expect((await bash.exec('echo /private/*')).stdout).not.toContain('accounts')
 		expect((await bash.exec('echo /private/accounts/*')).stdout).not.toContain('google.json')
-		expect((await bash.exec('ls /system')).stdout).toContain('user.md')
+		expect((await bash.exec('ls /docs')).stdout).toContain('user.md')
 		const grep = await bash.exec('grep -r SECRET /')
 		expect(`${grep.stdout}${grep.stderr}`).not.toContain('SECRET')
 	})
 
 	test('sibling paths under the same parent are untouched', async () => {
 		const { bash } = await denied()
-		expect((await bash.exec('cat /system/user.md')).stdout).toBe('name: Ada\n')
-		await bash.exec('echo ok > /system/other.txt')
-		expect((await bash.exec('cat /system/other.txt')).stdout).toBe('ok\n')
+		expect((await bash.exec('cat /docs/user.md')).stdout).toBe('name: Ada\n')
+		await bash.exec('echo ok > /docs/other.txt')
+		expect((await bash.exec('cat /docs/other.txt')).stdout).toBe('ok\n')
 	})
 
 	test('exists reads as absent (not an error), and writes are refused', async () => {

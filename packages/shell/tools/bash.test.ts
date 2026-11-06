@@ -41,11 +41,11 @@ describe.skipIf(process.platform !== 'darwin')('bashTool', () => {
 		base = await realpath(await mkdtemp(join(tmpdir(), 'ghost-bash-')))
 		root = join(base, 'files')
 		denied = join(root, 'private')
-		await mkdir(join(root, 'notes'), { recursive: true })
+		await mkdir(join(root, 'docs'), { recursive: true })
 		await mkdir(denied)
 		await writeFile(join(denied, 'credentials.json'), 'secret')
 		await symlink(denied, join(base, 'link'))
-		await symlink(join(denied, 'credentials.json'), join(root, 'notes', 'file-link'))
+		await symlink(join(denied, 'credentials.json'), join(root, 'docs', 'file-link'))
 	})
 
 	afterAll(async () => {
@@ -53,12 +53,12 @@ describe.skipIf(process.platform !== 'darwin')('bashTool', () => {
 	})
 
 	it('runs in the ask’s directory mapped under the root', async () => {
-		expect(await run('pwd', '/notes')).toEqual({ text: join(root, 'notes'), isError: false })
+		expect(await run('pwd', '/docs')).toEqual({ text: join(root, 'docs'), isError: false })
 		expect(await run('pwd')).toEqual({ text: root, isError: false })
 	})
 
 	it('sets GHOST_VOLUME to the root', async () => {
-		expect(await run('cd notes; echo "$GHOST_VOLUME"', '/')).toEqual({ text: root, isError: false })
+		expect(await run('cd docs; echo "$GHOST_VOLUME"', '/')).toEqual({ text: root, isError: false })
 	})
 
 	it('reports a failing command with its exit code and output', async () => {
@@ -89,7 +89,7 @@ describe.skipIf(process.platform !== 'darwin')('bashTool', () => {
 			`ls ${denied}`,
 			`echo x > ${denied}/new`,
 			`cat ${base}/link/credentials.json`,
-			'cat notes/file-link'
+			'cat docs/file-link'
 		]) {
 			const { text, isError } = await run(command)
 			expect(isError, command).toBe(true)

@@ -125,7 +125,7 @@ async function put(world: Volume, path: string, text: string) {
 const today = () => new Date().toISOString().slice(0, 10)
 
 async function dailyOf(world: Volume, day: string) {
-	return dec(await world.readFile(`/system/memory/daily/${day}.test.md`))
+	return dec(await world.readFile(`/.ghost/daily/${day}.test.md`))
 }
 
 /** A request's system prompt: every section in effect, in order. */
@@ -395,15 +395,15 @@ describe('sections and memory notes', () => {
 
 	it('builds the system prompt from the Volume, in order', async () => {
 		const world = volume(memStore())
-		await put(world, '/system/agents/main/soul.md', 'You are Wisp, a quiet ghost.')
-		await put(world, '/system/user.md', 'Name: Ada')
+		await put(world, '/.ghost/agents/main/soul.md', 'You are Wisp, a quiet ghost.')
+		await put(world, '/.ghost/user.md', 'Name: Ada')
 		await put(
 			world,
-			'/system/skills/brew/SKILL.md',
+			'/.ghost/skills/brew/SKILL.md',
 			'---\nname: brew\ndescription: Brew tea.\n---\nSteep it.'
 		)
-		await put(world, '/system/memory/core.md', '- Ada drinks oolong.')
-		await put(world, '/system/memory/daily/2026-10-20.test.md', '- Ada is moving house.')
+		await put(world, '/.ghost/core.md', '- Ada drinks oolong.')
+		await put(world, '/.ghost/daily/2026-10-20.test.md', '- Ada is moving house.')
 		const ghost = await openOn(':memory:', [noop], world, { timeZone: 'Pacific/Auckland' })
 		const prompts = capturePrompts()
 
@@ -417,7 +417,7 @@ describe('sections and memory notes', () => {
 			'shell `Test` (id `test`, kind `test`)',
 			'# about the user\n\nName: Ada',
 			'# skills\n\n',
-			'- brew (`/system/skills/brew/SKILL.md`) — Brew tea.',
+			'- brew (`/.ghost/skills/brew/SKILL.md`) — Brew tea.',
 			'# current time\n\nNow: 2026-10-20T01:00:00+13:00 (Pacific/Auckland).',
 			'# permanent memory\n\n- Ada drinks oolong.',
 			'# memories of the past 2 days\n\n',
@@ -446,17 +446,17 @@ describe('sections and memory notes', () => {
 	it("names the agent from its soul's frontmatter", async () => {
 		const world = volume(memStore())
 		expect(await agentName(world)).toBe('Computer')
-		await put(world, '/system/agents/main/soul.md', 'You are Wisp.\n\nagent_name: Wisp')
+		await put(world, '/.ghost/agents/main/soul.md', 'You are Wisp.\n\nagent_name: Wisp')
 		expect(await agentName(world)).toBe('Computer')
-		await put(world, '/system/agents/main/soul.md', '---\nagent_name: Wisp\n---\n\nYou are Wisp.')
+		await put(world, '/.ghost/agents/main/soul.md', '---\nagent_name: Wisp\n---\n\nYou are Wisp.')
 		expect(await agentName(world)).toBe('Wisp')
 	})
 
 	it("shows every shell's daily files for today and yesterday", async () => {
 		const world = volume(memStore())
-		await put(world, '/system/memory/daily/2026-10-18.laptop.md', '- Too old.')
-		await put(world, '/system/memory/daily/2026-10-19.laptop.md', '- Fixed the boiler.')
-		await put(world, '/system/memory/daily/2026-10-20.test.md', '- Today, here.')
+		await put(world, '/.ghost/daily/2026-10-18.laptop.md', '- Too old.')
+		await put(world, '/.ghost/daily/2026-10-19.laptop.md', '- Fixed the boiler.')
+		await put(world, '/.ghost/daily/2026-10-20.test.md', '- Today, here.')
 		const ghost = await openOn(':memory:', undefined, world, { timeZone: 'Pacific/Auckland' })
 		const prompts = capturePrompts()
 
@@ -477,7 +477,7 @@ describe('sections and memory notes', () => {
 				prompts.push(systemPrompt(context))
 				vi.setSystemTime(new Date(NOW.getTime() + 60_000))
 				return fauxAssistantMessage(
-					fauxToolCall('write', { path: '/system/memory/core.md', content: '- Remembered.' }),
+					fauxToolCall('write', { path: '/.ghost/core.md', content: '- Remembered.' }),
 					{ stopReason: 'toolUse' }
 				)
 			},
@@ -634,7 +634,7 @@ describe('sections and memory notes', () => {
 		await ghost.close()
 
 		await renewed
-		expect(await world.exists('/system/memory/daily/2026-10-19.test.md')).toBe(false)
+		expect(await world.exists('/.ghost/daily/2026-10-19.test.md')).toBe(false)
 	})
 
 	it('appends notes to the daily file without repeating a paragraph', async () => {
@@ -677,6 +677,52 @@ describe('the Volume is the world', () => {
 		])
 		expect(existsSync('ghost-notes')).toBe(false)
 		expect(existsSync('/ghost-notes')).toBe(false)
+	})
+
+	it('keeps the paths the host denies from every file tool and bash alike', async () => {
+		const world = volume(memStore())
+		await put(world, '/private/token.json', '{"token":"SECRET"}')
+		const ghost = await openGhost({
+			...depsOn(await openNodeSqliteState(':memory:'), world),
+			deny: ['/private']
+		})
+		open.push(ghost)
+		faux.setResponses([
+			...calls(
+				['read', { path: '/private/token.json' }],
+				['bash', { command: 'cat /private/token.json; ls /private; echo /private/*' }],
+				['write', { path: '/private/evil.json', content: 'x' }]
+			),
+			fauxAssistantMessage('done')
+		])
+
+		await ghost.ask('Peek.', { id: 'p' })
+
+		const results = toolResults(ghost)
+		expect(results).toMatchObject([
+			{ name: 'read', isError: true },
+			{ name: 'bash', text: expect.stringContaining('ls: /private: No such file') },
+			{ name: 'write', isError: true }
+		])
+		expect(JSON.stringify(results)).not.toContain('SECRET')
+		expect(await world.exists('/private/evil.json')).toBe(false)
+	})
+
+	it('denies nothing when the host names nothing', async () => {
+		const world = volume(memStore())
+		await put(world, '/private/token.json', '{"token":"SECRET"}')
+		const ghost = await openOn(':memory:', undefined, world)
+		faux.setResponses([
+			...calls(['read', { path: '/private/token.json' }], ['bash', { command: 'ls /private' }]),
+			fauxAssistantMessage('done')
+		])
+
+		await ghost.ask('Peek.', { id: 'p' })
+
+		expect(toolResults(ghost)).toMatchObject([
+			{ name: 'read', isError: false, text: '{"token":"SECRET"}' },
+			{ name: 'bash', isError: false, text: 'token.json\n' }
+		])
 	})
 
 	it('runs bash commands and pipelines over Volume files', async () => {
@@ -840,7 +886,7 @@ describe('shell tools replace built-ins by name', () => {
 			'write'
 		])
 		const shellRecord = JSON.parse(
-			dec(await world.readFile('/system/agents/main/shells/test.json'))
+			dec(await world.readFile('/.ghost/agents/main/shells/test.json'))
 		)
 		expect(shellRecord.capabilities).toEqual(['read', 'write', 'edit', 'transcript', 'bash'])
 	})
@@ -877,7 +923,7 @@ describe('shell tools replace built-ins by name', () => {
 		const withBash = sectionsOf(seenReplaced[0] ?? { messages: [] }).filesystem
 		expect(withBash).not.toContain(JUST_BASH)
 		expect(withBash).toContain(
-			'`/system/user.md` is `"$GHOST_VOLUME/system/user.md"`\nthere, and a bare `/` is the device\'s own root.'
+			'`/.ghost/user.md` is `"$GHOST_VOLUME/.ghost/user.md"`\nthere, and a bare `/` is the device\'s own root.'
 		)
 		expect(withBash).toContain(
 			'apps. `read`, `write` and `edit` see the Volume and nothing else, rooted at\n`/`; relative paths start from the directory the user asked from.\n`bash`, `emacs` reach this device itself'
@@ -892,7 +938,8 @@ shell over those files with no real processes: it has \`ls\`, \`cat\`, \`rg\`, \
 the like, but it cannot run programs such as \`npm\`, \`git\` or \`python\`.
 \`emacs\` reach this device itself, outside the Volume: real processes, real apps, the real filesystem. Use them when the work needs the machine, not the files.
 An ask may come with a line of context from the user's editor saying where they asked from;
-a path there marked as on this machine is outside the Volume, for \`bash\` to \`cd\` to.
+a path there marked as on this machine is outside the Volume, for \`bash\` to \`cd\` to. When
+the context names rules you have not read this conversation, read them first.
 
 ## This shell`
 		)
@@ -906,7 +953,7 @@ a path there marked as on this machine is outside the Volume, for \`bash\` to \`
 		const filesystem = sectionsOf(seen[0] ?? { messages: [] }).filesystem
 		expect(filesystem).not.toContain('`transcript` searches')
 		expect(filesystem).toContain('`transcript` reach this device itself')
-		expect(filesystem).toContain("this shell's included. Read only; never edit them.\n\nWhen")
+		expect(filesystem).toContain('not what they returned. Read only; never edit them.\n\nWhen')
 	})
 
 	it('rejects two shell tools with one name, naming the tool', async () => {
@@ -939,7 +986,7 @@ describe('transcript mirror, shell record and transcript tool', () => {
 	}
 
 	async function mirrorOf(world: Volume, shell = 'test', day = '2026-10-19') {
-		const text = dec(await world.readFile(`/system/agents/main/transcripts/${shell}/${day}.jsonl`))
+		const text = dec(await world.readFile(`/.ghost/agents/main/transcripts/${shell}/${day}.jsonl`))
 		return text
 			.trimEnd()
 			.split('\n')
@@ -965,8 +1012,7 @@ describe('transcript mirror, shell record and transcript tool', () => {
 		const lines = await mirrorOf(world)
 		expect(lines).toMatchObject([
 			{ at: NOW.toISOString(), kind: 'user', text: 'Talk.', askId: '1' },
-			{ kind: 'assistant', toolCalls: [{ name: 'long' }] },
-			{ kind: 'tool', name: 'long', text: `${'x'.repeat(2000)}… [3000 more characters]` },
+			{ kind: 'assistant', toolCalls: [{ name: 'long', input: '{}' }] },
 			{ kind: 'assistant', text: 'said' },
 			{ kind: 'user', text: 'Once more.' },
 			{ kind: 'assistant', text: 'again' }
@@ -975,19 +1021,92 @@ describe('transcript mirror, shell record and transcript tool', () => {
 		expect(ids).toEqual([...new Set(ids)].sort((a, b) => a - b))
 	})
 
+	it('keeps a tool call as its name and the head of its input, and no result', async () => {
+		const world = volume(memStore())
+		await put(world, '/docs/secret.txt', 'the password is hunter2')
+		faux.setResponses([
+			...calls(['read', { path: '/docs/secret.txt' }], ['long', { note: 'y'.repeat(300) }]),
+			fauxAssistantMessage('read it')
+		])
+
+		const ghost = await openOn(':memory:', [long], world)
+		await ghost.ask('Read the secret.', { id: '1' })
+		await ghost.close()
+
+		const text = dec(await world.readFile('/.ghost/agents/main/transcripts/test/2026-10-19.jsonl'))
+		expect(text).not.toContain('hunter2')
+		expect(text).not.toContain('x'.repeat(10))
+		expect(parseLines(text).map((line) => line.kind)).toEqual([
+			'user',
+			'assistant',
+			'assistant',
+			'assistant'
+		])
+		expect(parseLines(text)[2]).toMatchObject({
+			toolCalls: [{ name: 'long', input: `{"note":"${'y'.repeat(111)}…` }]
+		})
+	})
+
 	it("mirrors an ask's context apart from its words", async () => {
 		const world = volume(memStore())
 		faux.setResponses([fauxAssistantMessage('done')])
 
 		const ghost = await openOn(':memory:', undefined, world)
-		await ghost.ask('What does this do?', { id: '1', context: 'From Emacs: /notes/a.md, line 3' })
+		await ghost.ask('What does this do?', { id: '1', context: 'From Emacs: /docs/a.md, line 3' })
 		await ghost.close()
 
 		expect((await mirrorOf(world))[0]).toMatchObject({
 			kind: 'user',
 			text: 'What does this do?',
-			context: 'From Emacs: /notes/a.md, line 3'
+			context: 'From Emacs: /docs/a.md, line 3'
 		})
+	})
+
+	it('reads a transcript mirrored before the digest format as the digest', async () => {
+		const world = volume(memStore())
+		const call = { id: 'c1', name: 'read', args: { path: `/docs/${'a'.repeat(200)}.md` } }
+		await put(
+			world,
+			'/.ghost/agents/main/transcripts/laptop/2026-10-18.jsonl',
+			[
+				{ at: '2026-10-18T10:00:00.000Z', id: 1, kind: 'user', text: 'Repot the fern?' },
+				{ at: '2026-10-18T10:00:01.000Z', id: 2, kind: 'assistant', text: '', toolCalls: [call] },
+				{
+					at: '2026-10-18T10:00:02.000Z',
+					id: 3,
+					kind: 'tool',
+					callId: 'c1',
+					name: 'read',
+					text: 'the password is hunter2',
+					isError: false
+				},
+				{ at: '2026-10-18T10:00:03.000Z', id: 4, kind: 'assistant', text: 'Yes.', toolCalls: [] }
+			]
+				.map((line) => JSON.stringify(line))
+				.join('\n')
+		)
+		faux.setResponses([
+			...calls(
+				['transcript', { action: 'search', query: 'fern' }],
+				['transcript', { action: 'show', shell: 'laptop', date: '2026-10-18' }]
+			),
+			fauxAssistantMessage('done')
+		])
+		const ghost = await openOn(':memory:', undefined, world)
+
+		await ghost.ask('What about the fern?', { id: '1' })
+
+		const [search, show] = toolResults(ghost)
+		expect(search?.text).toBe('Times in UTC.\nlaptop 2026-10-18 #1 10:00 user: Repot the fern?')
+		expect(show?.text).toBe(
+			[
+				'Shell laptop, 2026-10-18, times in UTC.',
+				'#1 10:00 user: Repot the fern?',
+				`#2 10:00 → read {"path":"/docs/${'a'.repeat(105)}…`,
+				'#3 10:00 assistant: Yes.'
+			].join('\n')
+		)
+		expect(show?.text).not.toContain('hunter2')
 	})
 
 	it('dates the entries watchers see, in the snapshot too', async () => {
@@ -1014,7 +1133,7 @@ describe('transcript mirror, shell record and transcript tool', () => {
 		const world = volume(memStore())
 		await put(
 			world,
-			'/system/agents/main/transcripts/test/2026-10-19.jsonl',
+			'/.ghost/agents/main/transcripts/test/2026-10-19.jsonl',
 			'{"at":"2026-10-19T11:00:00.000Z","id":1,"kind":"us'
 		)
 		faux.setResponses([fauxAssistantMessage('fine')])
@@ -1023,7 +1142,7 @@ describe('transcript mirror, shell record and transcript tool', () => {
 		await ghost.ask('Still there?', { id: '1' })
 		await ghost.close()
 
-		const text = dec(await world.readFile('/system/agents/main/transcripts/test/2026-10-19.jsonl'))
+		const text = dec(await world.readFile('/.ghost/agents/main/transcripts/test/2026-10-19.jsonl'))
 		expect(text.split('\n')[0]).toBe('{"at":"2026-10-19T11:00:00.000Z","id":1,"kind":"us')
 		expect(parseLines(text)).toMatchObject([
 			{ kind: 'user', text: 'Still there?' },
@@ -1039,7 +1158,7 @@ describe('transcript mirror, shell record and transcript tool', () => {
 		const first = await openOn(path, undefined, world, { dayBoundary: false })
 		await first.ask('First.', { id: '1' })
 		await first.close()
-		await put(world, '/system/agents/main/transcripts/test/2026-10-20.jsonl', '{"at":"2026-10-20')
+		await put(world, '/.ghost/agents/main/transcripts/test/2026-10-20.jsonl', '{"at":"2026-10-20')
 
 		vi.setSystemTime(new Date('2026-10-20T12:00:00Z'))
 		const second = await openOn(path, undefined, world, { dayBoundary: false })
@@ -1050,7 +1169,7 @@ describe('transcript mirror, shell record and transcript tool', () => {
 			{ kind: 'user', text: 'First.' },
 			{ kind: 'assistant', text: 'one' }
 		])
-		const text = dec(await world.readFile('/system/agents/main/transcripts/test/2026-10-20.jsonl'))
+		const text = dec(await world.readFile('/.ghost/agents/main/transcripts/test/2026-10-20.jsonl'))
 		expect(text.split('\n')[0]).toBe('{"at":"2026-10-20')
 		expect(parseLines(text)).toMatchObject([
 			{ kind: 'user', text: 'Second.' },
@@ -1073,7 +1192,7 @@ describe('transcript mirror, shell record and transcript tool', () => {
 			await ghost.close()
 		}
 
-		expect(await world.exists('/system/agents/main/transcripts/test/2026-10-19.jsonl')).toBe(false)
+		expect(await world.exists('/.ghost/agents/main/transcripts/test/2026-10-19.jsonl')).toBe(false)
 		expect(await mirrorOf(world, 'test', '2026-10-20')).toMatchObject([
 			{ kind: 'user', text: 'Turn 0.' },
 			{ kind: 'assistant', text: 'one' },
@@ -1088,7 +1207,7 @@ describe('transcript mirror, shell record and transcript tool', () => {
 		const world = volume(memStore())
 		const ghost = await openOn(':memory:', [long], world)
 		const recordOf = async () =>
-			JSON.parse(dec(await world.readFile('/system/agents/main/shells/test.json')))
+			JSON.parse(dec(await world.readFile('/.ghost/agents/main/shells/test.json')))
 
 		expect(await recordOf()).toEqual({
 			id: 'test',
@@ -1165,7 +1284,7 @@ describe('daily consolidation', () => {
 		vi.useRealTimers()
 	})
 
-	const CORE = '/system/memory/core.md'
+	const CORE = '/.ghost/core.md'
 	const stateOf = (ghost: Ghost) => snapshotOf(ghost).status.consolidation
 	const day = (iso: string) => vi.setSystemTime(new Date(`${iso}T09:00:00Z`))
 	/** Long enough for a run that was going to start to have asked the model. */
@@ -1200,15 +1319,15 @@ describe('daily consolidation', () => {
 		const requests = consolidations('- Prefers dark mode.')
 		const ghost = await openOn(':memory:', undefined, world)
 		expect(stateOf(ghost)).toEqual({ from: '2026-10-19', running: false })
-		await put(world, '/system/memory/daily/2026-10-19.test.md', '- Fixed the login test.')
-		await put(world, '/system/memory/daily/2026-10-19.laptop.md', '- Prefers dark mode.')
+		await put(world, '/.ghost/daily/2026-10-19.test.md', '- Fixed the login test.')
+		await put(world, '/.ghost/daily/2026-10-19.laptop.md', '- Prefers dark mode.')
 		// The 19th is not over yet.
 		await ghost.ask('Same day.', { id: '1' })
 		await settle()
 		expect(requests).toEqual([])
 
 		day('2026-10-20')
-		await put(world, '/system/memory/daily/2026-10-20.test.md', '- Still today.')
+		await put(world, '/.ghost/daily/2026-10-20.test.md', '- Still today.')
 		await settle()
 		expect(requests).toEqual([])
 		await ghost.ask('Next day.', { id: '2' })
@@ -1252,7 +1371,7 @@ describe('daily consolidation', () => {
 			}
 		])
 		const ghost = await openOn(':memory:', undefined, world)
-		await put(world, '/system/memory/daily/2026-10-19.test.md', '- A.')
+		await put(world, '/.ghost/daily/2026-10-19.test.md', '- A.')
 		day('2026-10-20')
 
 		const first = ghost.ask('First.', { id: '1' })
@@ -1276,7 +1395,7 @@ describe('daily consolidation', () => {
 			'- From A and B.'
 		)
 		const ghost = await openOn(':memory:', undefined, world)
-		await put(world, '/system/memory/daily/2026-10-19.test.md', '- A.')
+		await put(world, '/.ghost/daily/2026-10-19.test.md', '- A.')
 
 		day('2026-10-20')
 		await ghost.ask('hi', { id: '1' })
@@ -1286,7 +1405,7 @@ describe('daily consolidation', () => {
 		})
 		expect(dec(await world.readFile(CORE))).toBe('- Likes tea.\n- Added meanwhile.\n')
 
-		await put(world, '/system/memory/daily/2026-10-20.test.md', '- B.')
+		await put(world, '/.ghost/daily/2026-10-20.test.md', '- B.')
 		day('2026-10-21')
 		await ghost.ask('hi', { id: '2' })
 		await vi.waitFor(() => expect(stateOf(ghost)).toEqual({ from: '2026-10-21', running: false }))
@@ -1301,7 +1420,7 @@ describe('daily consolidation', () => {
 		const path = join(dir, 'state.sqlite')
 		const world = volume(memStore())
 		for (const day of ['2026-10-19', '2026-10-20', '2026-10-21'])
-			await put(world, `/system/memory/daily/${day}.test.md`, `- On ${day}.`)
+			await put(world, `/.ghost/daily/${day}.test.md`, `- On ${day}.`)
 		const requests = consolidations('- Three days.')
 		await (await openOn(path, undefined, world)).close()
 
@@ -1320,7 +1439,7 @@ describe('daily consolidation', () => {
 	it('keeps one task however often consolidation was turned off and on', async () => {
 		const path = join(dir, 'state.sqlite')
 		const world = volume(memStore())
-		await put(world, '/system/memory/daily/2026-10-19.test.md', '- A.')
+		await put(world, '/.ghost/daily/2026-10-19.test.md', '- A.')
 		const requests = consolidations('- From A.', '- Again.')
 		for (let i = 0; i < 51; i++) {
 			await (await openOn(path, undefined, world)).close()
@@ -1340,7 +1459,7 @@ describe('daily consolidation', () => {
 	it('neither runs nor writes with consolidation off, and stops a task armed before', async () => {
 		const path = join(dir, 'state.sqlite')
 		const world = volume(memStore())
-		await put(world, '/system/memory/daily/2026-10-19.test.md', '- A.')
+		await put(world, '/.ghost/daily/2026-10-19.test.md', '- A.')
 		const requests = consolidations('- From A.')
 		await (await openOn(path, undefined, world)).close()
 
@@ -1368,7 +1487,7 @@ describe('daily consolidation', () => {
 		})
 		const requests = consolidations('- From A.', '- From A and B.')
 		const ghost = await openOn(':memory:', undefined, flaky)
-		await put(world, '/system/memory/daily/2026-10-19.test.md', '- A.')
+		await put(world, '/.ghost/daily/2026-10-19.test.md', '- A.')
 
 		day('2026-10-20')
 		await ghost.ask('hi', { id: '1' })
@@ -1378,7 +1497,7 @@ describe('daily consolidation', () => {
 		})
 		expect(await world.exists(CORE)).toBe(false)
 
-		await put(world, '/system/memory/daily/2026-10-20.test.md', '- B.')
+		await put(world, '/.ghost/daily/2026-10-20.test.md', '- B.')
 		day('2026-10-21')
 		await ghost.ask('hi', { id: '2' })
 		await vi.waitFor(() => expect(stateOf(ghost)).toEqual({ from: '2026-10-21', running: false }))
@@ -1396,7 +1515,7 @@ describe('daily consolidation', () => {
 			'- From A and B.'
 		)
 		const first = await openOn(path, undefined, world)
-		await put(world, '/system/memory/daily/2026-10-19.test.md', '- A.')
+		await put(world, '/.ghost/daily/2026-10-19.test.md', '- A.')
 		day('2026-10-20')
 		await first.ask('hi', { id: '1' })
 		await vi.waitFor(() => {
@@ -1411,7 +1530,7 @@ describe('daily consolidation', () => {
 		await state.run('INSERT INTO ballast VALUES (zeroblob(2097152))')
 		const ghost = await openBounded(state, world, 1024 * 1024)
 		await vi.waitFor(async () => expect(await tables(state)).not.toContain('ballast'))
-		await put(world, '/system/memory/daily/2026-10-20.test.md', '- B.')
+		await put(world, '/.ghost/daily/2026-10-20.test.md', '- B.')
 		day('2026-10-21')
 		await ghost.ask('hi', { id: '2' })
 
@@ -1425,8 +1544,8 @@ describe('daily consolidation', () => {
 	it('keeps the days of a run a rotation cuts off', async () => {
 		const path = join(dir, 'state.sqlite')
 		const world = volume(memStore())
-		await put(world, '/system/memory/daily/2026-10-19.test.md', '- A.')
-		await put(world, '/system/memory/daily/2026-10-20.test.md', '- B.')
+		await put(world, '/.ghost/daily/2026-10-19.test.md', '- A.')
+		await put(world, '/.ghost/daily/2026-10-20.test.md', '- B.')
 		const requests: string[] = []
 		let hold = true
 		faux.setResponses(
@@ -1466,7 +1585,7 @@ describe('daily consolidation', () => {
 
 	it('starts the new generation at the day a rotation the process died in kept', async () => {
 		const world = volume(memStore())
-		await put(world, '/system/memory/daily/2026-10-17.test.md', '- Older.')
+		await put(world, '/.ghost/daily/2026-10-17.test.md', '- Older.')
 		const state = await openNodeSqliteState(':memory:')
 		await state.exec(
 			'CREATE TABLE ghost_state (singleton INTEGER PRIMARY KEY, generation INTEGER NOT NULL, carried TEXT NOT NULL)'
@@ -1490,7 +1609,7 @@ describe('daily consolidation', () => {
 			await state.run('INSERT INTO ballast VALUES (zeroblob(2097152))')
 		}, '- Asked once.')
 		const ghost = await openBounded(state, world, 1024 * 1024)
-		await put(world, '/system/memory/daily/2026-10-19.test.md', '- A.')
+		await put(world, '/.ghost/daily/2026-10-19.test.md', '- A.')
 		day('2026-10-20')
 
 		await ghost.ask('first', { id: '1' })
@@ -1630,9 +1749,9 @@ describe('state rotation', () => {
 		await third.close()
 
 		const lines = parseLines(
-			dec(await world.readFile(`/system/agents/main/transcripts/test/${today()}.jsonl`))
+			dec(await world.readFile(`/.ghost/agents/main/transcripts/test/${today()}.jsonl`))
 		)
-		expect(lines.filter((line) => line.kind !== 'tool')).toMatchObject([
+		expect(lines).toMatchObject([
 			{ kind: 'user', text: 'first' },
 			{ kind: 'assistant', text: 'one' },
 			{ kind: 'user', text: 'second' },

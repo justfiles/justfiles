@@ -20,27 +20,28 @@ import type { Volume } from '@justfiles/fs'
 import { Bash, type CommandName, type FsStat, getCommandNames } from 'just-bash'
 import { volumeFs } from './justbash/volume-fs.ts'
 
-/** The shell's credentials; no file tool or command of the ghost reaches them. */
-const PRIVATE = ['/private']
-
-/**
- * pi-durable's `ExecutionEnv` over the Volume: the files are the Volume's, and the shell is
- * just-bash over the same files, so nothing reaches the real disk or starts a process. `at`
- * gives an environment per working directory. They share one file system id, so pi orders
- * `edit` and `write` calls on one file across them. `close` stops watching the Volume.
- */
 /**
  * just-bash's commands, less `sqlite3`: it runs in a worker started from a file beside
  * just-bash, which the shell's one-file bundle does not have.
  */
 const COMMANDS = getCommandNames().filter((name) => name !== 'sqlite3') as CommandName[]
 
-export function volumeEnv(volume: Volume): {
+/**
+ * pi-durable's `ExecutionEnv` over the Volume: the files are the Volume's, and the shell is
+ * just-bash over the same files, so nothing reaches the real disk or starts a process. `at`
+ * gives an environment per working directory. They share one file system id, so pi orders
+ * `edit` and `write` calls on one file across them. `deny` names Volume paths no file tool
+ * or command may read or write, the host's call. `close` stops watching the Volume.
+ */
+export function volumeEnv(
+	volume: Volume,
+	deny: readonly string[] = []
+): {
 	at(cwd: string): ExecutionEnv
 	close(): Promise<void>
 } {
-	// Both halves go through this one adapter, so `/private` is denied to both alike.
-	const fs = volumeFs(volume, PRIVATE)
+	// Both halves go through this one adapter, so a denied path is denied to both alike.
+	const fs = volumeFs(volume, deny)
 	const bash = new Bash({ fs, cwd: '/', commands: COMMANDS })
 	const id = `volume:${crypto.randomUUID()}`
 

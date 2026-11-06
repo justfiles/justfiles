@@ -130,7 +130,7 @@ export async function dailyNotes(
 }
 
 /**
- * User skills under /system/skills: a directory `<id>/SKILL.md` or a file `<id>.md`, listed
+ * User skills under the skills directory: a directory `<id>/SKILL.md` or a file `<id>.md`, listed
  * from their frontmatter. The agent reads a body with `read` when it needs it.
  */
 async function skillsCatalogue(volume: Volume): Promise<string | undefined> {

@@ -61,13 +61,13 @@
                         :at "2026-10-21T09:05:00Z")
      (ghost-test--entry :id 2 :kind "assistant" :text ""
                         :toolCalls `[((id . "c1") (name . "read")
-                                      (args (path . "/notes.md")))])
+                                      (args (path . "/a.md")))])
      (ghost-test--entry :id 3 :kind "tool" :callId "c1" :name "read"
                         :text "the notes" :isError nil)
      (ghost-test--entry :id 4 :kind "assistant" :text "Done." :toolCalls [])))
    (let ((text (ghost-test--text)))
      (should (string-match-p "you › Read it\\." text))
-     (should (string-match-p "  ▸ read {\"path\":\"/notes.md\"}\n.*ghost › Done\\."
+     (should (string-match-p "  ▸ read {\"path\":\"/a.md\"}\n.*ghost › Done\\."
                              text))
      (should-not (string-match-p "the notes" text))
      (should-not (string-match-p "◆" text)))
@@ -284,32 +284,29 @@
      (ghost-previous-turn)
      (should (looking-at ".* you › One")))))
 
-(ert-deftest ghost-test-makes-buttons-of-paths-and-task-ids ()
+(ert-deftest ghost-test-makes-buttons-of-paths ()
   (let* ((root (make-temp-file "ghost-root" t))
          (ghost-root root))
     (unwind-protect
         (ghost-test--with-transcript
-         (make-directory (expand-file-name "system" root))
-         (write-region "" nil (expand-file-name "system/core.md" root))
+         (make-directory (expand-file-name ".ghost" root))
+         (write-region "" nil (expand-file-name ".ghost/core.md" root))
          (ghost--event
           (ghost-test--snapshot
            (ghost-test--entry
             :id 1 :kind "assistant" :toolCalls []
-            :text "See /system/core.md:3, not /missing.md, and 20261020T151948.")))
+            :text "See /.ghost/core.md:3, not /missing.md.")))
          (with-current-buffer "*ghost*"
            (goto-char (point-min))
-           (search-forward "/system")
+           (search-forward "/.ghost")
            (let ((button (button-at (point))))
              (should button)
-             (should (equal (button-label button) "/system/core.md:3"))
+             (should (equal (button-label button) "/.ghost/core.md:3"))
              (should (equal (button-get button 'ghost-file)
-                            (expand-file-name "system/core.md" root)))
+                            (expand-file-name ".ghost/core.md" root)))
              (should (equal (button-get button 'ghost-line) 3)))
            (search-forward "/missing")
-           (should-not (button-at (point)))
-           (search-forward "20261020")
-           (should (equal (button-get (button-at (point)) 'ghost-task)
-                          "20261020T151948"))))
+           (should-not (button-at (point)))))
       (delete-directory root t))))
 
 (ert-deftest ghost-test-draws-an-answer-from-its-html ()
@@ -462,7 +459,7 @@
 (ert-deftest ghost-test-shows-the-avatar-at-the-right-of-the-header-line ()
   (let* ((root (make-temp-file "ghost-root" t))
          (ghost-root root)
-         (file (expand-file-name "system/agents/main/avatar.png" root))
+         (file (expand-file-name ".ghost/agents/main/avatar.png" root))
          (ghost--name "Wisp")
          (ghost--status '((busy) (queued . 0)))
          (ghost--avatar nil)
@@ -536,7 +533,7 @@
 (ert-deftest ghost-test-says-where-an-ask-is-asked-from ()
   (let* ((root (make-temp-file "ghost-root" t))
          (ghost-root root)
-         (inside (expand-file-name "notes/a.md" root))
+         (inside (expand-file-name "docs/a.md" root))
          (outside (make-temp-file "ghost-outside" nil ".ts" "one\ntwo\n")))
     (unwind-protect
         (progn
@@ -544,10 +541,10 @@
           (write-region "one\ntwo\nthree\n" nil inside)
           (with-current-buffer (find-file-noselect inside)
             (forward-line 2)
-            (should (equal (ghost-context) "From Emacs: /notes/a.md, line 3"))
+            (should (equal (ghost-context) "From Emacs: /docs/a.md, line 3"))
             (insert "more ")
             (should (equal (ghost-context)
-                           "From Emacs: /notes/a.md, line 3 (unsaved changes)"))
+                           "From Emacs: /docs/a.md, line 3 (unsaved changes)"))
             (set-buffer-modified-p nil)
             (kill-buffer))
           (with-current-buffer (find-file-noselect outside)

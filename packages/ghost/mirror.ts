@@ -6,11 +6,26 @@ import { dayInTz } from './timezone.ts'
 import { toEntry } from './transcript.ts'
 import type { ShellRecord, TranscriptEntry } from './types.ts'
 
-/** One line of a mirrored transcript: an entry and when it was said, as an ISO time. */
-export type MirroredEntry = TranscriptEntry & { at: string }
+/**
+ * One line of a mirrored transcript: an entry and when it was said, as an ISO time. The
+ * transcript is what syncs to every shell, so it is digest-grade: a tool call is kept as its
+ * name and the head of its input, and a tool result not at all. Tool results are the bulk of
+ * a conversation and where secrets pass through; the asks, the answers and the tool names
+ * recall it as well.
+ */
+export type MirroredEntry = (
+	| Exclude<TranscriptEntry, { kind: 'assistant' | 'tool' }>
+	| {
+			id: number
+			kind: 'assistant'
+			text: string
+			toolCalls: { id: string; name: string; input: string }[]
+			error?: string
+	  }
+) & { at: string }
 
-/** Of a tool result, what the mirror keeps. */
-const TOOL_TEXT_LIMIT = 2000
+/** Of a tool call's input, as JSON, what the mirror keeps. */
+const INPUT_LIMIT = 120
 
 interface MirrorDeps {
 	volume: Volume
@@ -66,7 +81,7 @@ export function createMirror({ volume, shellId, timeZone, scan }: MirrorDeps) {
 		}
 		for await (const record of scan(mark)) {
 			const entry = toEntry(record)
-			if (entry !== undefined) {
+			if (entry !== undefined && entry.kind !== 'tool') {
 				const at = new Date(entry.at ?? Date.now())
 				const said = dayInTz(at, timeZone)
 				if (day === undefined || said > day) day = said
@@ -104,24 +119,47 @@ export function createMirror({ volume, shellId, timeZone, scan }: MirrorDeps) {
 	}
 }
 
-/** The entries of one transcript file; a line that does not parse is skipped. */
+/**
+ * The entries of one transcript file; a line that does not parse is skipped. A file mirrored
+ * before the digest format holds tool results and whole inputs, and is read as the digest.
+ */
 export function parseLines(text: string): MirroredEntry[] {
 	const entries: MirroredEntry[] = []
 	for (const line of text.split('\n')) {
 		if (line.trim() === '') continue
 		try {
 			const entry = JSON.parse(line)
-			if (typeof entry?.id === 'number' && typeof entry.at === 'string') entries.push(entry)
+			if (typeof entry?.id !== 'number' || typeof entry.at !== 'string' || entry.kind === 'tool')
+				continue
+			entries.push(
+				entry.kind === 'assistant'
+					? { ...entry, toolCalls: (entry.toolCalls ?? []).map(digest) }
+					: entry
+			)
 		} catch {}
 	}
 	return entries
 }
 
-function mirrored(entry: TranscriptEntry, at: Date): MirroredEntry {
-	const line = { at: at.toISOString(), ...entry }
-	if (line.kind === 'tool' && line.text.length > TOOL_TEXT_LIMIT)
-		line.text = `${line.text.slice(0, TOOL_TEXT_LIMIT)}… [${line.text.length - TOOL_TEXT_LIMIT} more characters]`
-	return line
+function mirrored(entry: Exclude<TranscriptEntry, { kind: 'tool' }>, at: Date): MirroredEntry {
+	if (entry.kind !== 'assistant') return { at: at.toISOString(), ...entry }
+	return { at: at.toISOString(), ...entry, toolCalls: entry.toolCalls.map(digest) }
+}
+
+/** A tool call as the mirror keeps it: its name and the head of its input as JSON. */
+function digest({
+	id,
+	name,
+	args,
+	input
+}: {
+	id: string
+	name: string
+	args?: unknown
+	input?: string
+}): { id: string; name: string; input: string } {
+	const whole = input ?? JSON.stringify(args) ?? ''
+	return { id, name, input: whole.length > INPUT_LIMIT ? `${whole.slice(0, INPUT_LIMIT)}…` : whole }
 }
 
 /** Write this shell's record: who it is, the tools it has, and now as when it was last seen. */

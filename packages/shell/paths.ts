@@ -1,5 +1,6 @@
+import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { isAbsolute, join, posix, relative, resolve, sep } from 'node:path'
+import { dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path'
 
 /**
  * This shell's own directory: state, record, lock and socket. Never in the Volume.
@@ -24,4 +25,19 @@ export function volumeCwd(cwd: string, root: string): string {
 /** A Volume path as a real path under `root`; `..` stops at the Volume's root. */
 export function devicePath(path: string, root: string): string {
 	return join(root, posix.resolve('/', path).slice(1))
+}
+
+/**
+ * The rules of asks from `dir`: the nearest `AGENTS.md` in it or above it, as every coding
+ * harness finds a root's rules, or undefined without one.
+ */
+export function rulesFile(
+	dir: string,
+	exists: (path: string) => boolean = existsSync
+): string | undefined {
+	for (let at = resolve(dir); ; at = dirname(at)) {
+		const file = join(at, 'AGENTS.md')
+		if (exists(file)) return file
+		if (dirname(at) === at) return undefined
+	}
 }

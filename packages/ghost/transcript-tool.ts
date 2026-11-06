@@ -28,7 +28,7 @@ export function transcriptTool(volume: Volume, timeZone: string): Tool<Params> {
 		description: `Read the conversations of every shell, this one included, from their mirrored transcripts under ${paths.transcriptsDir()}.
 - search: the newest ${SEARCH_LIMIT} entries holding every word of \`query\`, oldest first, optionally only from \`shell\` and from \`since\` (YYYY-MM-DD) on.
 - show: one shell's day (\`shell\`, \`date\` YYYY-MM-DD), optionally a \`range\` of entry numbers as search and show print them, "12" or "12-30".
-Tool calls and results are collapsed to one line each.`,
+Each tool call is one line, its name and the start of its input; what a tool returned is not kept.`,
 		parameters: {
 			type: 'object',
 			properties: {
@@ -105,14 +105,8 @@ Tool calls and results are collapsed to one line each.`,
 					...(entry.text === '' && entry.toolCalls.length > 0
 						? []
 						: [`${head} assistant: ${entry.text}`]),
-					...entry.toolCalls.map((call) =>
-						collapse(`${head} → ${call.name} ${JSON.stringify(call.args)}`)
-					),
+					...entry.toolCalls.map((call) => collapse(`${head} → ${call.name} ${call.input}`)),
 					...(entry.error === undefined ? [] : [`${head} (failed: ${entry.error})`])
-				]
-			case 'tool':
-				return [
-					collapse(`${head} ← ${entry.name}${entry.isError ? ' (error)' : ''}: ${entry.text}`)
 				]
 			case 'reset':
 				return [`${head} new session${entry.handoff ? `: ${entry.handoff}` : ''}`]
@@ -128,12 +122,7 @@ function said(entry: MirroredEntry): string {
 		case 'user':
 			return entry.text
 		case 'assistant':
-			return [
-				entry.text,
-				...entry.toolCalls.map((call) => `${call.name} ${JSON.stringify(call.args)}`)
-			].join('\n')
-		case 'tool':
-			return `${entry.name}\n${entry.text}`
+			return [entry.text, ...entry.toolCalls.map((call) => `${call.name} ${call.input}`)].join('\n')
 		case 'reset':
 			return entry.handoff ?? ''
 		case 'compaction':

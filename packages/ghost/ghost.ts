@@ -255,7 +255,7 @@ interface GenerationOptions {
 
 /** The ghost on one generation of its state. */
 async function openOn(deps: GhostDeps, opts: GenerationOptions): Promise<Generation> {
-	const env = volumeEnv(deps.volume)
+	const env = volumeEnv(deps.volume, deps.deny)
 	return open(deps, env, opts).catch(async (error) => {
 		await env.close()
 		throw error

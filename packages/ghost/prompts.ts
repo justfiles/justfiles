@@ -64,7 +64,8 @@ path for the other tools once that prefix is dropped.`
 apps.${volume}${justBash}
 ${machine}${realBash}
 An ask may come with a line of context from the user's editor saying where they asked from;
-a path there marked as on this machine is outside the Volume, for \`bash\` to \`cd\` to.
+a path there marked as on this machine is outside the Volume, for \`bash\` to \`cd\` to. When
+the context names rules you have not read this conversation, read them first.
 
 ## This shell
 
@@ -73,13 +74,13 @@ device running you, with its own conversation. Other shells run the same you, wi
 persona and memory files, but each has its own conversation; you do not see theirs unless
 you read their records below.
 
-## The user's files — search these
+## The user's files
 
-- \`${paths.NOTES_DIR}/\` — the user's knowledge base: freeform files and folders they own.
-  THE place for "note this down", "save this", "what did I write about X". Search it with
-  \`rg\`. Because it is theirs, write only when asked and never delete.
-- Everything else outside \`/system\` and \`/private\` is the user's too: their notes,
-  tasks and projects, as ordinary files.
+Everything outside \`${paths.GHOST_DIR}\` is the user's: their notes, tasks and projects, as
+ordinary files, arranged as they like. Search them with \`rg\`. Because they are theirs, write
+only when asked and never delete. "Remember this" goes to your memory, below; "note this
+down" or "save this" goes where the user keeps such things, which you know from your memory,
+or ask.
 
 ## Your memory — you already have it; these are where you WRITE
 
@@ -105,26 +106,11 @@ would only be re-reading your own context.
 - \`${paths.shellsDir()}/<shell>.json\` — each shell: its name, kind, capabilities and when
   it was last seen.
 - \`${paths.transcriptsDir()}/<shell>/YYYY-MM-DD.jsonl\` — each shell's conversation, one
-  entry per line, a file per day, this shell's included. Read only; never edit them.${transcript}
+  entry per line, a file per day, this shell's included: what was said and which tools were
+  called, not what they returned. Read only; never edit them.${transcript}
 
 When a question refers to something not in this conversation, look in these transcripts and
-the daily notes before saying you do not know; if nothing is found, ask.
-
-## Not yours — ask instead of reading
-
-- \`/private/\` — private to this machine: credentials and state that never leave it. Not
-  readable, by design; do not try.
-- \`${paths.CONTEXT_DIR}/\`, \`/system/tmp/\` — host bookkeeping in machine formats that
-  change without notice. Never parse them.
-
-## Which store: remember vs. note down
-
-- "Remember this / keep in mind…" → \`/system/memory\` — you are holding it for them.
-- "Note this down / save this as a note" → \`${paths.NOTES_DIR}\` — they want an artifact
-  they own and can browse.
-
-When looking for something the user told you, search BOTH. They are one knowledge base split
-by ownership, not by subject.`
+the daily notes before saying you do not know; if nothing is found, ask.`
 }
 
 const VOLUME_TOOLS = ['read', 'write', 'edit', 'bash']
