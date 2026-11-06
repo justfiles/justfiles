@@ -1062,6 +1062,53 @@ describe('transcript mirror, shell record and transcript tool', () => {
 		})
 	})
 
+	it('reads a transcript mirrored before the digest format as the digest', async () => {
+		const world = volume(memStore())
+		const call = { id: 'c1', name: 'read', args: { path: `/docs/${'a'.repeat(200)}.md` } }
+		await put(
+			world,
+			'/.ghost/agents/main/transcripts/laptop/2026-10-18.jsonl',
+			[
+				{ at: '2026-10-18T10:00:00.000Z', id: 1, kind: 'user', text: 'Repot the fern?' },
+				{ at: '2026-10-18T10:00:01.000Z', id: 2, kind: 'assistant', text: '', toolCalls: [call] },
+				{
+					at: '2026-10-18T10:00:02.000Z',
+					id: 3,
+					kind: 'tool',
+					callId: 'c1',
+					name: 'read',
+					text: 'the password is hunter2',
+					isError: false
+				},
+				{ at: '2026-10-18T10:00:03.000Z', id: 4, kind: 'assistant', text: 'Yes.', toolCalls: [] }
+			]
+				.map((line) => JSON.stringify(line))
+				.join('\n')
+		)
+		faux.setResponses([
+			...calls(
+				['transcript', { action: 'search', query: 'fern' }],
+				['transcript', { action: 'show', shell: 'laptop', date: '2026-10-18' }]
+			),
+			fauxAssistantMessage('done')
+		])
+		const ghost = await openOn(':memory:', undefined, world)
+
+		await ghost.ask('What about the fern?', { id: '1' })
+
+		const [search, show] = toolResults(ghost)
+		expect(search?.text).toBe('Times in UTC.\nlaptop 2026-10-18 #1 10:00 user: Repot the fern?')
+		expect(show?.text).toBe(
+			[
+				'Shell laptop, 2026-10-18, times in UTC.',
+				'#1 10:00 user: Repot the fern?',
+				`#2 10:00 → read {"path":"/docs/${'a'.repeat(105)}…`,
+				'#3 10:00 assistant: Yes.'
+			].join('\n')
+		)
+		expect(show?.text).not.toContain('hunter2')
+	})
+
 	it('dates the entries watchers see, in the snapshot too', async () => {
 		const ghost = await openOn(':memory:')
 		const events = record(ghost)

@@ -119,14 +119,23 @@ export function createMirror({ volume, shellId, timeZone, scan }: MirrorDeps) {
 	}
 }
 
-/** The entries of one transcript file; a line that does not parse is skipped. */
+/**
+ * The entries of one transcript file; a line that does not parse is skipped. A file mirrored
+ * before the digest format holds tool results and whole inputs, and is read as the digest.
+ */
 export function parseLines(text: string): MirroredEntry[] {
 	const entries: MirroredEntry[] = []
 	for (const line of text.split('\n')) {
 		if (line.trim() === '') continue
 		try {
 			const entry = JSON.parse(line)
-			if (typeof entry?.id === 'number' && typeof entry.at === 'string') entries.push(entry)
+			if (typeof entry?.id !== 'number' || typeof entry.at !== 'string' || entry.kind === 'tool')
+				continue
+			entries.push(
+				entry.kind === 'assistant'
+					? { ...entry, toolCalls: (entry.toolCalls ?? []).map(digest) }
+					: entry
+			)
 		} catch {}
 	}
 	return entries
@@ -134,15 +143,23 @@ export function parseLines(text: string): MirroredEntry[] {
 
 function mirrored(entry: Exclude<TranscriptEntry, { kind: 'tool' }>, at: Date): MirroredEntry {
 	if (entry.kind !== 'assistant') return { at: at.toISOString(), ...entry }
-	const toolCalls = entry.toolCalls.map(({ id, name, args }) => {
-		const input = JSON.stringify(args) ?? ''
-		return {
-			id,
-			name,
-			input: input.length > INPUT_LIMIT ? `${input.slice(0, INPUT_LIMIT)}…` : input
-		}
-	})
-	return { at: at.toISOString(), ...entry, toolCalls }
+	return { at: at.toISOString(), ...entry, toolCalls: entry.toolCalls.map(digest) }
+}
+
+/** A tool call as the mirror keeps it: its name and the head of its input as JSON. */
+function digest({
+	id,
+	name,
+	args,
+	input
+}: {
+	id: string
+	name: string
+	args?: unknown
+	input?: string
+}): { id: string; name: string; input: string } {
+	const whole = input ?? JSON.stringify(args) ?? ''
+	return { id, name, input: whole.length > INPUT_LIMIT ? `${whole.slice(0, INPUT_LIMIT)}…` : whole }
 }
 
 /** Write this shell's record: who it is, the tools it has, and now as when it was last seen. */
