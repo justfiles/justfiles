@@ -492,8 +492,11 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 			// document any local tool can edit, and it is what `rename` and `rm` are aimed at. An
 			// entry that no longer names somewhere inside the tree is dropped; the row stays, and
 			// the next scan finds its file the way it finds any other.
+			// So is one under a name this store leaves alone — but not the holding area, which is
+			// inside the sidecar on purpose and whose files may be the only copy of their bytes.
 			const found = entry.seen === undefined ? null : spot(entry.seen.path)
-			const at = found === null || apartPath(found) ? null : found
+			const parked = found?.startsWith(`${held}/`) === true
+			const at = found === null || (apartPath(found) && !parked) ? null : found
 			if (entry.seen && at !== null) mark(row.id, { ...entry.seen, path: at })
 		}
 		return true

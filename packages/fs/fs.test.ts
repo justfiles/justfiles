@@ -2583,6 +2583,24 @@ describe("a tool's database beside the files is not the files", () => {
 		})
 	}
 
+	test('a file parked in the sidecar is still found after a reopen', async () => {
+		const root = await temp()
+		// Adopted from the disk, so its file is the only copy of its bytes.
+		await writeFile(join(root, 'only.txt'), 'the only copy')
+		const one = open(root)
+		const row = named((await feed(one)).nodes, 'only.txt')
+		const hash = row.content ?? ''
+		// Unreachable, which parks its file inside `.jfs`.
+		await one.commit([{ ...row, parent: 'nowhere', version: 'peer:2' }])
+		expect((await readdir(root)).includes('only.txt')).toBe(false)
+		await one.close?.()
+
+		const two = open(root)
+		expect(read(await two.blobs.get(hash))).toBe('the only copy')
+		await two.commit([{ ...row, version: 'peer:3' }])
+		expect(await readFile(join(root, 'only.txt'), 'utf8')).toBe('the only copy')
+	})
+
 	test('the sidecar ignores itself, so git sees none of it', async () => {
 		const root = await temp()
 		await exec('git', ['init', '-q', root])
