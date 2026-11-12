@@ -25,7 +25,13 @@
  * answer; a WRITE is the one exception, because the page carrying it would otherwise be
  * retried for ever. It does not adopt what POSIX has and a row cannot say — a FIFO, a
  * socket, a device node — and does not read one either: those names are left where they
- * are, untouched and unreported. It does not defend against a tree whose owner is hostile to it: a
+ * are, untouched and unreported. Nor does it hold another tool's database: a path component
+ * named `.jfs` or `.git`, in any case and at any depth, is never a row — not listed, adopted,
+ * reported or written — whether it is a directory, a worktree's `.git` file or a symlink. A
+ * nested repo's history is git's to keep and no peer's to replace. The one way this store
+ * still moves one is with its directory: a rename carries it along, and a directory a peer
+ * deletes while rows under it are still live here is parked whole in `.jfs/detached`, its
+ * `.git` with it. It does not defend against a tree whose owner is hostile to it: a
  * `.jfs` an attacker can write is a store an attacker controls. And it has no
  * transaction, so a commit that FAILS halfway leaves the batch half applied and the
  * sidecar unsaved — the next scan reconciles what it can see, and a retry heals the rest.
@@ -99,6 +105,19 @@ const INDEX = 'index.json'
 const SPILL = 'blobs'
 /** Where the file of a row the tree cannot reach waits for a place in it. */
 const HOLD = 'detached'
+
+/** The sidecar's own ignore file, so git sees nothing of it and no repo needs a line. */
+const IGNORE = '.gitignore'
+
+/**
+ * Tools' own databases beside the files, which are not the files: this store's sidecar and
+ * git's. Lowercase, because a case-insensitive filesystem lets `.GIT` reach the same one.
+ */
+const APART = new Set([SIDECAR, '.git'])
+/** Is this one path component a name this store never holds a row for? */
+const apart = (name: string): boolean => APART.has(name.toLowerCase())
+/** Does any component of this path have such a name? */
+const apartPath = (path: Spot): boolean => path.split('/').some(apart)
 
 /** What a `Hash` is: 64 hex characters. A name for content, never a path. */
 const HASH = /^[0-9a-f]{64}$/
@@ -196,7 +215,8 @@ export type FsStoreOptions = {
 	 * Root-level names another store is joined at (T15's bindings, as this backend sees
 	 * them). Their directories are left exactly as they are: not listed, not adopted,
 	 * not reported — so `<root>/private` can be a real folder in Finder that this store
-	 * never puts on any wire.
+	 * never puts on any wire. One name per binding, matched exactly; the only other names
+	 * left alone are the fixed `.jfs` and `.git`.
 	 */
 	mounts?: Iterable<string>
 }
@@ -213,7 +233,7 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 	 * filter here ("an import filter private to the native bridge: the bridge never
 	 * commits matching observations"). It is one name per binding, out of the host's own
 	 * fstab, not a pattern language: nothing here matches, and a name that is not bound
-	 * is ordinary data.
+	 * is ordinary data. Beside it, `APART` is the one fixed rule that holds at any depth.
 	 */
 	const foreign = new Set<string>([SIDECAR, ...(opts.mounts ?? [])])
 	const byId = new Map<NodeId, Node>()
@@ -351,6 +371,7 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 			at = up
 		}
 		if (names[0] !== undefined && foreign.has(names[0])) return null
+		if (names.some(apart)) return null
 		// Down from root, ONE name at a time: a row from a peer carrying `..`, a separator or a
 		// NUL simply has nowhere to be.
 		let spot = AT_ROOT
@@ -367,6 +388,7 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 	 * row may hold yet. Null when the parent has no path of its own.
 	 */
 	const pathUnder = (parent: NodeId, name: string): Spot | null => {
+		if (apart(name)) return null
 		if (parent === ROOT) return foreign.has(name) ? null : under(AT_ROOT, name)
 		const up = byId.get(parent)
 		if (!up || up.deleted || !holdsRows(up)) return null
@@ -470,7 +492,11 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 			// document any local tool can edit, and it is what `rename` and `rm` are aimed at. An
 			// entry that no longer names somewhere inside the tree is dropped; the row stays, and
 			// the next scan finds its file the way it finds any other.
-			const at = entry.seen === undefined ? null : spot(entry.seen.path)
+			// So is one under a name this store leaves alone — but not the holding area, which is
+			// inside the sidecar on purpose and whose files may be the only copy of their bytes.
+			const found = entry.seen === undefined ? null : spot(entry.seen.path)
+			const parked = found?.startsWith(`${held}/`) === true
+			const at = found === null || (apartPath(found) && !parked) ? null : found
 			if (entry.seen && at !== null) mark(row.id, { ...entry.seen, path: at })
 		}
 		return true
@@ -991,7 +1017,8 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 		const found = new Set(names)
 		const below: Landed[] = []
 		for (const name of names) {
-			if (path === AT_ROOT && foreign.has(name)) continue
+			// Left in `found`, so a row that names it is not buried on its account either.
+			if ((path === AT_ROOT && foreign.has(name)) || apart(name)) continue
 			// A name the OS lists that this store could never address. Not adopted, and not a
 			// reason to stop: the rest of the directory is still this store’s to reconcile.
 			const at = under(path, name)
@@ -1133,6 +1160,9 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 	 */
 	const syncAt = async (path: Spot): Promise<void> => {
 		if (path === AT_ROOT) return syncRoot()
+		// Before the walk up, which would re-list the directory holding a `.git` for every one
+		// of git's own writes inside it.
+		if (apartPath(path)) return
 		// The nearest ancestor this index knows: an event may name a path several levels below
 		// anything the store has heard of, or spell a name in a normalization the rows do not
 		// use, and the ancestor’s own listing is what gets it right.
@@ -1245,6 +1275,8 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 		// removing an entry is a change to the DIRECTORY's own row as well.
 		const paths = new Set<Spot>()
 		for (const path of dirty) {
+			// Its parent too: a hint AT a `.git` would otherwise re-list the directory above it.
+			if (apartPath(path)) continue
 			paths.add(path)
 			paths.add(up(path))
 		}
@@ -1389,7 +1421,14 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 		// Creates the tree itself when it is not there — and BEFORE root's state is
 		// taken down, so the sidecar's own arrival is not a change to it.
 		await disk.dir(spilled)
+		const ignore = under(side, IGNORE)
+		// Best effort: the store works without it, and a refusal is no reason not to open.
+		if (ignore !== null && (await disk.stat(ignore)) === null)
+			await disk
+				.write(ignore, new TextEncoder().encode('*\n'), undefined, 'unseen')
+				.catch(() => null)
 		const loaded = await load()
+		const retired = retire()
 		if (!loaded) {
 			lineage = crypto.randomUUID() // rule 11: a fresh sidecar is a fresh lineage
 			const seed = await derive(AT_ROOT, s, { id: ROOT, parent: ROOT, name: '' })
@@ -1414,7 +1453,32 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 		}
 		// A lineage nobody else can read fences every cursor this instance hands out, so a fresh
 		// sidecar is saved even when the tree it describes is empty and the scan found nothing.
-		if (!loaded && !changed) await save()
+		if ((!loaded || retired) && !changed) await save()
+	}
+
+	/**
+	 * Rows an older store adopted under a name it now leaves alone. A tombstone is the only
+	 * thing the feed can say, and the files stay: this store has no path for them any more.
+	 * By the rows' own names up the parent chain, so one never materialized is caught too.
+	 */
+	const retire = (): boolean => {
+		let any = false
+		for (const row of [...byId.values()]) {
+			if (row.deleted) continue
+			const walked = new Set<NodeId>()
+			for (let at = row; at.id !== ROOT && !walked.has(at.id); ) {
+				walked.add(at.id)
+				if (apart(at.name)) {
+					entomb(row.id)
+					any = true
+					break
+				}
+				const parent = byId.get(at.parent)
+				if (!parent) break
+				at = parent
+			}
+		}
+		return any
 	}
 
 	let opening: Promise<void> | null = null
