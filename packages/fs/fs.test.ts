@@ -2357,3 +2357,246 @@ describe('a mount is a real directory this store does not own', () => {
 		expect(await readdir(join(root, 'private'))).toEqual([])
 	})
 })
+
+describe("a tool's database beside the files is not the files", () => {
+	/**
+	 * `.git` is what `.jfs` is: a tool's own bookkeeping, at any depth and in any case. Each
+	 * case runs at the top of the tree and two levels down, because the old filter only ever
+	 * looked at the first name of a path.
+	 */
+	const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+	const exec = promisify(execFile)
+
+	/** The directory the case works in, made on the disk, and its row once the store has it. */
+	const base = async (root: string, where: string[]): Promise<string> => {
+		const dir = join(root, ...where)
+		await mkdir(dir, { recursive: true })
+		return dir
+	}
+	const rowAt = async (store: Store, where: string[]): Promise<Node> => {
+		let row = await store.get(ROOT)
+		for (const name of where) row = row && (await store.child(row.id, name))
+		if (!row) throw new Error(`no row at ${where.join('/')}`)
+		return row
+	}
+
+	/** A repo as git leaves it: a few of the files it writes, and one beside it. */
+	const repo = async (dir: string, gitName = '.git'): Promise<void> => {
+		await mkdir(join(dir, gitName, 'objects', 'ab'), { recursive: true })
+		await writeFile(join(dir, gitName, 'HEAD'), 'ref: refs/heads/main\n')
+		await writeFile(join(dir, gitName, 'objects', 'ab', 'cdef'), 'an object')
+		await writeFile(join(dir, 'readme.md'), 'beside it')
+	}
+
+	const live = (nodes: Node[]): string[] => nodes.filter((n) => !n.deleted).map((n) => n.name)
+	const GIT_NAMES = ['.git', '.GIT', 'HEAD', 'objects', 'ab', 'cdef']
+
+	const fileRow = async (
+		store: Store,
+		id: string,
+		parent: string,
+		name: string,
+		content: string
+	): Promise<Node> => {
+		const data = bytes(content)
+		const hash = await sha256Hex(data)
+		await store.blobs.put(hash, data)
+		return {
+			id,
+			parent,
+			name,
+			type: 'file',
+			mode: 0o100644,
+			mtimeNs: 0n,
+			size: BigInt(data.length),
+			content: hash,
+			version: 'peer:1'
+		}
+	}
+
+	for (const where of [[], ['a', 'b']]) {
+		const at = where.length === 0 ? 'at the top' : 'two levels down'
+
+		test(`a scan adopts what is beside a .git and nothing of it, ${at}`, async () => {
+			const root = await temp()
+			const dir = await base(root, where)
+			await repo(dir)
+			const store = open(root)
+			const names = live((await feed(store)).nodes)
+			expect(names).toContain('readme.md')
+			for (const name of GIT_NAMES) expect(names).not.toContain(name)
+			expect(await store.child((await rowAt(store, where)).id, '.git')).toBeNull()
+		})
+
+		test(`a .git that is a file, and one spelled .GIT, are skipped the same, ${at}`, async () => {
+			const root = await temp()
+			const dir = await base(root, where)
+			// A worktree's `.git` is a file naming a path on one machine.
+			await mkdir(join(dir, 'worktree'))
+			await writeFile(join(dir, 'worktree', '.git'), 'gitdir: /somewhere/else\n')
+			await mkdir(join(dir, 'shouting'))
+			await repo(join(dir, 'shouting'), '.GIT')
+			const store = open(root)
+			const names = live((await feed(store)).nodes)
+			expect(names).toContain('worktree')
+			expect(names).toContain('readme.md')
+			for (const name of GIT_NAMES) expect(names).not.toContain(name)
+		})
+
+		test(`a write under .git never reaches the feed, watched or walked, ${at}`, async () => {
+			const root = await temp()
+			const dir = await base(root, where)
+			await repo(dir)
+			const store = open(root)
+			let { cursor } = await feed(store) // arms the watcher
+
+			// What a `git commit` does: a lock, a new object, a ref. Then something that IS
+			// data, so there is a change to wait for.
+			const twice = async (round: string): Promise<void> => {
+				await writeFile(join(dir, '.git', 'index.lock'), round)
+				await writeFile(join(dir, '.git', 'objects', 'ab', round), 'another object')
+				await writeFile(join(dir, '.git', 'HEAD'), `ref: refs/heads/${round}\n`)
+				await writeFile(join(dir, `${round}.md`), round)
+				await settled(
+					store,
+					async () => (await store.child((await rowAt(store, where)).id, `${round}.md`)) !== null
+				)
+				const delta = await feed(store, cursor)
+				cursor = delta.cursor
+				const names = delta.nodes.map((n) => n.name)
+				expect(names).toContain(`${round}.md`)
+				for (const name of [...GIT_NAMES, 'index.lock', round]) expect(names).not.toContain(name)
+			}
+
+			await twice('watched')
+			await store.close?.() // no watcher: the walk alone
+			await sleep(SWEEP_MS)
+			await twice('walked')
+		}, 30_000)
+
+		test(`a committed row named .git, or under one, writes nothing, ${at}`, async () => {
+			const root = await temp()
+			const dir = await base(root, where)
+			await repo(dir)
+			const store = open(root)
+			await feed(store)
+			const parent = (await rowAt(store, where)).id
+
+			// From a peer or from the `Volume` API alike: a file taking the name, and a directory
+			// taking it with a hook inside — the one that would run code here on the next commit.
+			// Ids that sort first, so rule 1 would give them the name if anything could.
+			const file = await fileRow(store, '!f', parent, '.git', 'gitdir: /elsewhere\n')
+			const dirRow: Node = {
+				id: '!g',
+				parent,
+				name: '.git',
+				type: 'dir',
+				mode: 0o040755,
+				mtimeNs: 0n,
+				size: 0n,
+				version: 'peer:1'
+			}
+			const hook = await fileRow(store, '!h', '!g', 'HEAD', 'ref: refs/heads/evil\n')
+			await store.commit([file, dirRow, hook])
+
+			// Held as rows, like any row the tree cannot place …
+			expect((await store.get('!f'))?.name).toBe('.git')
+			expect((await store.get('!h'))?.parent).toBe('!g')
+			// … and nothing of them on the disk.
+			expect(await readFile(join(dir, '.git', 'HEAD'), 'utf8')).toBe('ref: refs/heads/main\n')
+			expect((await readdir(join(dir, '.git'))).sort()).toEqual(['HEAD', 'objects'])
+			expect((await readdir(dir)).sort()).toEqual(
+				where.length === 0 ? ['.git', '.jfs', 'readme.md'] : ['.git', 'readme.md']
+			)
+		})
+
+		test(`deleting a directory that holds a .git leaves both, ${at}`, async () => {
+			const root = await temp()
+			const dir = await base(root, where)
+			await mkdir(join(dir, 'project'))
+			await repo(join(dir, 'project'))
+			const store = open(root)
+			await feed(store)
+			const project = await store.child((await rowAt(store, where)).id, 'project')
+			const readme = project && (await store.child(project.id, 'readme.md'))
+			if (!project || !readme) throw new Error('the project was not adopted')
+
+			await store.commit([
+				{ ...readme, deleted: true, version: 'peer:2' },
+				{ ...project, deleted: true, version: 'peer:2' }
+			])
+			// The file the rows knew goes; `rmdir` refuses what they never knew.
+			expect((await readdir(join(dir, 'project'))).sort()).toEqual(['.git'])
+			expect(await readFile(join(dir, 'project', '.git', 'HEAD'), 'utf8')).toBe(
+				'ref: refs/heads/main\n'
+			)
+		})
+
+		test(`renaming a directory that holds a .git carries it along, ${at}`, async () => {
+			const root = await temp()
+			const dir = await base(root, where)
+			await mkdir(join(dir, 'project'))
+			await repo(join(dir, 'project'))
+			const store = open(root)
+			await feed(store)
+			const project = await store.child((await rowAt(store, where)).id, 'project')
+			if (!project) throw new Error('the project was not adopted')
+
+			await store.commit([{ ...project, name: 'renamed', version: 'peer:2' }])
+			expect((await readdir(dir)).includes('project')).toBe(false)
+			expect(await readFile(join(dir, 'renamed', '.git', 'objects', 'ab', 'cdef'), 'utf8')).toBe(
+				'an object'
+			)
+		})
+
+		test(`rows an older store adopted under .git are retired, and the files stay, ${at}`, async () => {
+			const root = await temp()
+			const dir = await base(root, where)
+			// What the store before this rule left: rows for a repo's files. Made by adopting
+			// them under another name and then giving the name, on the disk and in the index,
+			// back to git.
+			await repo(dir, 'dotgit')
+			const one = open(root)
+			const { nodes, cursor } = await feed(one)
+			expect(live(nodes)).toContain('cdef')
+			await one.close?.()
+			await rename(join(dir, 'dotgit'), join(dir, '.git'))
+			const index = join(root, '.jfs', 'index.json')
+			await writeFile(
+				index,
+				(await readFile(index, 'utf8'))
+					.replaceAll('"dotgit', '".git')
+					.replaceAll('/dotgit', '/.git')
+			)
+
+			const two = open(root)
+			const retired = (await feed(two, cursor)).nodes
+			const tombs = retired.filter((n) => n.deleted).map((n) => n.name)
+			for (const name of ['.git', 'HEAD', 'objects', 'ab', 'cdef']) expect(tombs).toContain(name)
+			expect(live(retired)).not.toContain('cdef')
+			expect(await readFile(join(dir, '.git', 'objects', 'ab', 'cdef'), 'utf8')).toBe('an object')
+			const after = (await feed(two)).cursor
+			await two.close?.()
+
+			const three = open(root)
+			expect((await feed(three, after)).nodes).toEqual([])
+		})
+	}
+
+	test('the sidecar ignores itself, so git sees none of it', async () => {
+		const root = await temp()
+		await exec('git', ['init', '-q', root])
+		const store = open(root)
+		await place(store, 'notes.md', 'hello')
+		expect(await readFile(join(root, '.jfs', '.gitignore'), 'utf8')).toBe('*\n')
+		const { stdout } = await exec('git', [
+			'-C',
+			root,
+			'status',
+			'--porcelain',
+			'--untracked-files=all'
+		])
+		expect(stdout).toContain('notes.md')
+		expect(stdout).not.toContain('.jfs')
+	})
+})
