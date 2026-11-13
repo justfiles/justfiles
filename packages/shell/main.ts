@@ -63,7 +63,12 @@ export async function main(): Promise<void> {
 		// Resolved, so that `bash` sees the same paths `pwd` prints.
 		const root = await realpath(volumeRoot(settings))
 		const ghost = await openGhost({
-			volume: volume(fsStore(root, { mounts: ['private'] })),
+			volume: volume(
+				fsStore(root, {
+					mounts: ['private'],
+					warn: (message) => console.warn(`volume: ${message}`)
+				})
+			),
 			state: await openNodeSqliteState(join(dir, 'state.sqlite')),
 			models,
 			shell,

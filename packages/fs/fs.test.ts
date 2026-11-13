@@ -28,7 +28,7 @@ import { afterEach, describe, expect, test } from 'vitest'
 import { storeConformance } from './conformance'
 import { type Disk, fsDisk, type Spot } from './disk'
 import { authorOf, versions } from './engine'
-import { fsStore, SWEEP_MS } from './fs'
+import { fsStore, ignored, SWEEP_MS } from './fs'
 import { type Cursor, GuardError, type Node, ROOT, type Store, sha256Hex } from './store'
 
 /**
@@ -2616,5 +2616,246 @@ describe("a tool's database beside the files is not the files", () => {
 		])
 		expect(stdout).toContain('notes.md')
 		expect(stdout).not.toContain('.jfs')
+	})
+})
+
+describe('.justignore: the names the Volume owner leaves alone', () => {
+	/**
+	 * What `.git` is to the store, a name in the root's `.justignore` is too: no row for it or
+	 * under it, at any depth. Each disk case runs at the top and two levels down.
+	 */
+	const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+	const live = (nodes: Node[]): string[] => nodes.filter((n) => !n.deleted).map((n) => n.name)
+	const rowAt = async (store: Store, where: string[]): Promise<Node> => {
+		let row = await store.get(ROOT)
+		for (const name of where) row = row && (await store.child(row.id, name))
+		if (!row) throw new Error(`no row at ${where.join('/')}`)
+		return row
+	}
+	/** A clone in `.repos`, as a ken root keeps its checkouts, and a file beside it. */
+	const checkouts = async (dir: string, name = '.repos'): Promise<void> => {
+		await mkdir(join(dir, name, 'clone', 'src'), { recursive: true })
+		await writeFile(join(dir, name, 'clone', 'src', 'main.ts'), 'a checkout')
+		await writeFile(join(dir, 'notes.md'), 'beside it')
+	}
+	const REPOS_NAMES = ['.repos', 'clone', 'src', 'main.ts']
+	const opened = (root: string, warn?: (message: string) => void): Store => {
+		const store = fsStore(root, warn ? { warn } : {})
+		built.push(store)
+		return store
+	}
+
+	describe('the parser', () => {
+		test('one exact name per line, lowercased, trimmed, with one trailing / dropped', () => {
+			const text = [
+				'# checkouts',
+				'',
+				'  .repos  ',
+				'node_modules/',
+				'Build',
+				'\t# indented comment',
+				'dist\r'
+			].join('\n')
+			expect(ignored(text)).toEqual({
+				names: ['.repos', 'node_modules', 'build', 'dist'],
+				refused: []
+			})
+		})
+
+		test('a pattern, a path, a non-name and the file itself are refused, by line', () => {
+			const lines = [
+				'ok', // 1
+				'*.log', // 2
+				'a?', // 3
+				'!keep', // 4
+				'[ab]', // 5
+				'back\\slash', // 6
+				'a/b', // 7
+				'/rooted', // 8
+				'twice//', // 9
+				'.', // 10
+				'..', // 11
+				'/', // 12
+				'.justignore', // 13
+				'.JustIgnore/' // 14
+			]
+			const { names, refused } = ignored(lines.join('\n'))
+			expect(names).toEqual(['ok'])
+			expect(refused.map((r) => r.line)).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
+			for (const r of refused) expect(r.reason).not.toBe('')
+		})
+	})
+
+	for (const where of [[], ['a', 'b']]) {
+		const at = where.length === 0 ? 'at the top' : 'two levels down'
+
+		test(`a scan adopts what is beside a .repos and nothing of it, ${at}`, async () => {
+			const root = await temp()
+			await writeFile(join(root, '.justignore'), '.repos\n')
+			const dir = join(root, ...where)
+			await mkdir(dir, { recursive: true })
+			await checkouts(dir)
+			// And in another case, which the name matches too.
+			await mkdir(join(dir, 'other'))
+			await checkouts(join(dir, 'other'), '.Repos')
+			const store = open(root)
+			const names = live((await feed(store)).nodes)
+			expect(names).toContain('notes.md')
+			expect(names).toContain('other')
+			expect(names).toContain('.justignore')
+			for (const name of [...REPOS_NAMES, '.Repos']) expect(names).not.toContain(name)
+			expect(await store.child((await rowAt(store, where)).id, '.repos')).toBeNull()
+		})
+
+		test(`a write under .repos never reaches the feed, watched or walked, ${at}`, async () => {
+			const root = await temp()
+			await writeFile(join(root, '.justignore'), '.repos\n')
+			const dir = join(root, ...where)
+			await mkdir(dir, { recursive: true })
+			await checkouts(dir)
+			const store = open(root)
+			let { cursor } = await feed(store) // arms the watcher
+
+			const twice = async (round: string): Promise<void> => {
+				await writeFile(join(dir, '.repos', 'clone', round), round)
+				await writeFile(join(dir, `${round}.md`), round)
+				await settled(
+					store,
+					async () => (await store.child((await rowAt(store, where)).id, `${round}.md`)) !== null
+				)
+				const delta = await feed(store, cursor)
+				cursor = delta.cursor
+				const names = delta.nodes.map((n) => n.name)
+				expect(names).toContain(`${round}.md`)
+				for (const name of [...REPOS_NAMES, round]) expect(names).not.toContain(name)
+			}
+
+			await twice('watched')
+			await store.close?.() // no watcher: the walk alone
+			await sleep(SWEEP_MS)
+			await twice('walked')
+		}, 30_000)
+
+		test(`a committed row named .repos, or under one, writes nothing, ${at}`, async () => {
+			const root = await temp()
+			await writeFile(join(root, '.justignore'), '.repos\n')
+			const dir = join(root, ...where)
+			await mkdir(dir, { recursive: true })
+			await writeFile(join(dir, 'notes.md'), 'beside it')
+			const store = open(root)
+			await feed(store)
+			const parent = (await rowAt(store, where)).id
+
+			const data = bytes('from a peer')
+			const hash = await sha256Hex(data)
+			await store.blobs.put(hash, data)
+			const file = (id: string, under: string, name: string): Node => ({
+				id,
+				parent: under,
+				name,
+				type: 'file',
+				mode: 0o100644,
+				mtimeNs: 0n,
+				size: BigInt(data.length),
+				content: hash,
+				version: 'peer:1'
+			})
+			const dirRow: Node = {
+				id: '!g',
+				parent,
+				name: '.REPOS',
+				type: 'dir',
+				mode: 0o040755,
+				mtimeNs: 0n,
+				size: 0n,
+				version: 'peer:1'
+			}
+			await store.commit([file('!f', parent, '.repos'), dirRow, file('!h', '!g', 'inside')])
+
+			expect((await store.get('!f'))?.name).toBe('.repos')
+			expect((await store.get('!h'))?.parent).toBe('!g')
+			expect((await readdir(dir)).sort()).toEqual(
+				where.length === 0 ? ['.jfs', '.justignore', 'notes.md'] : ['notes.md']
+			)
+		})
+	}
+
+	test('a .justignore two levels down is ordinary data', async () => {
+		const root = await temp()
+		await mkdir(join(root, 'a', 'b'), { recursive: true })
+		await writeFile(join(root, 'a', 'b', '.justignore'), '.repos\n')
+		await checkouts(join(root, 'a', 'b'))
+		const names = live((await feed(open(root))).nodes)
+		expect(names).toContain('.justignore')
+		for (const name of REPOS_NAMES) expect(names).toContain(name)
+	})
+
+	test('a name added later retires its rows, the files stay, and a reopen mints nothing', async () => {
+		const root = await temp()
+		await checkouts(root)
+		const one = open(root)
+		const { nodes, cursor } = await feed(one)
+		for (const name of REPOS_NAMES) expect(live(nodes)).toContain(name)
+		await one.close?.()
+
+		await writeFile(join(root, '.justignore'), '.repos\n')
+		const two = open(root)
+		const retired = (await feed(two, cursor)).nodes
+		const tombs = retired.filter((n) => n.deleted).map((n) => n.name)
+		for (const name of REPOS_NAMES) expect(tombs).toContain(name)
+		expect(live(retired)).toContain('.justignore')
+		expect(await readFile(join(root, '.repos', 'clone', 'src', 'main.ts'), 'utf8')).toBe(
+			'a checkout'
+		)
+		const after = (await feed(two)).cursor
+		await two.close?.()
+
+		const three = open(root)
+		expect((await feed(three, after)).nodes).toEqual([])
+	})
+
+	test('a name removed later: what is under it is adopted', async () => {
+		const root = await temp()
+		await writeFile(join(root, '.justignore'), '.repos\n')
+		await checkouts(root)
+		const one = open(root)
+		const { nodes, cursor } = await feed(one)
+		for (const name of REPOS_NAMES) expect(live(nodes)).not.toContain(name)
+		await one.close?.()
+
+		await writeFile(join(root, '.justignore'), '# nothing\n')
+		const two = open(root)
+		const adopted = live((await feed(two, cursor)).nodes)
+		for (const name of REPOS_NAMES) expect(adopted).toContain(name)
+	})
+
+	test('refused lines are each warned about, and .git is still left alone', async () => {
+		const root = await temp()
+		await writeFile(join(root, '.justignore'), '*.log\n\n.git/hooks\n!.git\n')
+		await mkdir(join(root, '.git'))
+		await writeFile(join(root, '.git', 'HEAD'), 'ref: refs/heads/main\n')
+		await writeFile(join(root, 'a.log'), 'kept')
+		const warned: string[] = []
+		const store = opened(root, (message) => warned.push(message))
+		const names = live((await feed(store)).nodes)
+		expect(warned).toHaveLength(3)
+		expect(warned[0]).toContain('.justignore:1')
+		expect(warned[1]).toContain('.justignore:3')
+		expect(warned[2]).toContain('.justignore:4')
+		expect(names).toContain('a.log')
+		expect(names).not.toContain('.git')
+		expect(names).not.toContain('HEAD')
+	})
+
+	test('no .justignore: only .jfs and .git are left alone', async () => {
+		const root = await temp()
+		await checkouts(root)
+		await mkdir(join(root, '.git'))
+		await writeFile(join(root, '.git', 'HEAD'), 'ref: refs/heads/main\n')
+		const warned: string[] = []
+		const names = live((await feed(opened(root, (m) => warned.push(m)))).nodes)
+		for (const name of REPOS_NAMES) expect(names).toContain(name)
+		expect(names).not.toContain('.git')
+		expect(warned).toEqual([])
 	})
 })
