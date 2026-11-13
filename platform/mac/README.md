@@ -66,6 +66,31 @@ The shared install and reconcile paths prefetch hosted files. A hosted app there
 after the prefetch succeeds. The cache is local, derived data under `/private`, so it does not sync.
 The thin bundles in `~/Applications/Just Computer Apps/` are also derived data. They contain no app code.
 
+### Names the Volume leaves alone
+
+On disk, the Volume never holds a file or folder named `.jfs` (its own index) or `.git`, at any
+depth and in any case: they are not listed, synced or written. To add names, put a `.justignore`
+at the Volume's root:
+
+```
+# A ken root's checkouts: each clone is its machine's own.
+.repos
+node_modules/
+```
+
+One exact name per line, matched against each path component at any depth, case-insensitively.
+Blank lines and `#` lines are skipped, spaces are trimmed, and one trailing `/` is dropped. It is
+not `.gitignore`: a line with `*`, `?`, `!`, `[`, `\` or any other `/` is refused and matches
+nothing, as are `.`, `..` and `.justignore`; the daemon logs each refused line. The file itself
+syncs like any other, so every device skips the same names. A `.justignore` deeper in the tree
+is ordinary data, and nothing in it can stop `.jfs` or `.git` from being left alone.
+
+The file is read when the store opens, so a change takes effect at the next restart. Rows already
+synced under a newly added name are deleted from the Volume, while the files stay on this disk.
+Another device that has not restarted yet applies those deletions by removing its synced copy of
+those files. So add a name before anything is put under it, or restart every device after
+changing the file.
+
 ### What a fresh Volume starts with
 
 The hosted apps `daemon/builtins.ts` names in `SEEDED`: **Files**, **Notes**, and **Paint**.

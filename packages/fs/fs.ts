@@ -28,12 +28,13 @@
  * are, untouched and unreported. Nor does it hold another tool's database: a path component
  * named `.jfs` or `.git`, in any case and at any depth, is never a row — not listed, adopted,
  * reported or written — whether it is a directory, a worktree's `.git` file or a symlink. A
- * nested repo's history is git's to keep and no peer's to replace. The one way this store
- * still moves one is with its directory: a rename carries it along, and a directory a peer
- * deletes while rows under it are still live here is parked whole in `.jfs/detached`, its
- * `.git` with it. It does not defend against a tree whose owner is hostile to it: a
- * `.jfs` an attacker can write is a store an attacker controls. And it has no
- * transaction, so a commit that FAILS halfway leaves the batch half applied and the
+ * nested repo's history is git's to keep and no peer's to replace. The Volume's owner adds
+ * names to those two in `.justignore` at the root, one exact name per line, read at open.
+ * The one way this store still moves one is with its directory: a rename carries it along,
+ * and a directory a peer deletes while rows under it are still live here is parked whole in
+ * `.jfs/detached`, its `.git` with it. It does not defend against a tree whose owner is
+ * hostile to it: a `.jfs` an attacker can write is a store an attacker controls. And it has
+ * no transaction, so a commit that FAILS halfway leaves the batch half applied and the
  * sidecar unsaved — the next scan reconciles what it can see, and a retry heals the rest.
  *
  * A finding outside this envelope is a change to the envelope, and belongs here before it
@@ -69,6 +70,7 @@ import {
 	stateOf,
 	unchanged,
 	under,
+	unsafe,
 	up,
 	WRITE
 } from './disk'
@@ -112,12 +114,48 @@ const IGNORE = '.gitignore'
 /**
  * Tools' own databases beside the files, which are not the files: this store's sidecar and
  * git's. Lowercase, because a case-insensitive filesystem lets `.GIT` reach the same one.
+ * The Volume's `.justignore` adds names to these, and nothing takes these two away: a peer
+ * that could write `.git/hooks` could run code on this machine.
  */
-const APART = new Set([SIDECAR, '.git'])
-/** Is this one path component a name this store never holds a row for? */
-const apart = (name: string): boolean => APART.has(name.toLowerCase())
-/** Does any component of this path have such a name? */
-const apartPath = (path: Spot): boolean => path.split('/').some(apart)
+const APART: ReadonlySet<string> = new Set([SIDECAR, '.git'])
+
+/**
+ * The Volume owner's names to leave alone, beside `APART`: one file at the root, which syncs
+ * like any other file and is read once, at open. A file of that name anywhere deeper is data.
+ */
+const JUSTIGNORE = '.justignore'
+
+/** A line of `.justignore` that names nothing, and why. Lines count from 1. */
+export type Refused = { line: number; reason: string }
+
+/**
+ * `.justignore`, read: one exact name per line, lowercased as `APART` is. Blank lines and
+ * `#` lines are skipped, a name is trimmed, and one trailing `/` is dropped. It is not
+ * `.gitignore`: a line that looks like a pattern or a path is refused, not guessed at, and
+ * matches nothing.
+ */
+export function ignored(text: string): { names: string[]; refused: Refused[] } {
+	const names: string[] = []
+	const refused: Refused[] = []
+	text.split('\n').forEach((raw, i) => {
+		const line = raw.trim()
+		if (line === '' || line.startsWith('#')) return
+		const name = line.endsWith('/') ? line.slice(0, -1) : line
+		const reason = refusal(name)
+		if (reason === null) names.push(name.toLowerCase())
+		else refused.push({ line: i + 1, reason })
+	})
+	return { names, refused }
+}
+
+/** Why a `.justignore` line, trimmed and without its trailing `/`, is not a name. */
+const refusal = (name: string): string | null => {
+	if (/[*?![\\]/.test(name)) return 'a pattern, and only exact names are read'
+	if (name.includes('/')) return 'a path, and only a single name is read'
+	if (unsafe(name)) return 'not a name'
+	if (name.toLowerCase() === JUSTIGNORE) return 'the file cannot leave itself alone'
+	return null
+}
 
 /** What a `Hash` is: 64 hex characters. A name for content, never a path. */
 const HASH = /^[0-9a-f]{64}$/
@@ -216,9 +254,11 @@ export type FsStoreOptions = {
 	 * them). Their directories are left exactly as they are: not listed, not adopted,
 	 * not reported — so `<root>/private` can be a real folder in Finder that this store
 	 * never puts on any wire. One name per binding, matched exactly; the only other names
-	 * left alone are the fixed `.jfs` and `.git`.
+	 * left alone are the fixed `.jfs` and `.git`, and those the root's `.justignore` adds.
 	 */
 	mounts?: Iterable<string>
+	/** Told of each `.justignore` line that names nothing, and of a file it cannot read. */
+	warn?: (message: string) => void
 }
 
 export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
@@ -233,9 +273,15 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 	 * filter here ("an import filter private to the native bridge: the bridge never
 	 * commits matching observations"). It is one name per binding, out of the host's own
 	 * fstab, not a pattern language: nothing here matches, and a name that is not bound
-	 * is ordinary data. Beside it, `APART` is the one fixed rule that holds at any depth.
+	 * is ordinary data. Beside it, `apart` is the one rule that holds at any depth.
 	 */
 	const foreign = new Set<string>([SIDECAR, ...(opts.mounts ?? [])])
+	/** `APART` and the names `.justignore` adds, set once in `start` before anything looks. */
+	let apartNames = APART
+	/** Is this one path component a name this store never holds a row for? */
+	const apart = (name: string): boolean => apartNames.has(name.toLowerCase())
+	/** Does any component of this path have such a name? */
+	const apartPath = (path: Spot): boolean => path.split('/').some(apart)
 	const byId = new Map<NodeId, Node>()
 	/**
 	 * parent → name → ids, live rows only. One index for both jobs the tree has: the
@@ -1427,6 +1473,9 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 			await disk
 				.write(ignore, new TextEncoder().encode('*\n'), undefined, 'unseen')
 				.catch(() => null)
+		// Before `load`, which drops what the index says it saw under a name left alone, and
+		// before `retire`, which tombstones the rows.
+		apartNames = await justignore()
 		const loaded = await load()
 		const retired = retire()
 		if (!loaded) {
@@ -1457,9 +1506,31 @@ export function fsStore(root: string, opts: FsStoreOptions = {}): Store {
 	}
 
 	/**
-	 * Rows an older store adopted under a name it now leaves alone. A tombstone is the only
-	 * thing the feed can say, and the files stay: this store has no path for them any more.
-	 * By the rows' own names up the parent chain, so one never materialized is caught too.
+	 * `APART` and the names in the root's `.justignore`. A file that is missing, not a regular
+	 * file or unreadable adds nothing; only the last is warned about. A refused line never
+	 * stops the open.
+	 */
+	const justignore = async (): Promise<ReadonlySet<string>> => {
+		const at = under(AT_ROOT, JUSTIGNORE)
+		if (at === null || !(await disk.stat(at))?.isFile()) return APART
+		let raw: Uint8Array | null
+		try {
+			raw = await disk.bytes(at, true)
+		} catch (e) {
+			opts.warn?.(`${JUSTIGNORE}: cannot be read, so it adds no names: ${String(e)}`)
+			return APART
+		}
+		if (raw === null) return APART
+		const { names, refused } = ignored(new TextDecoder().decode(raw))
+		for (const { line, reason } of refused) opts.warn?.(`${JUSTIGNORE}:${line}: ${reason}`)
+		return new Set([...APART, ...names])
+	}
+
+	/**
+	 * Rows adopted under a name this store now leaves alone: by an older store, or before
+	 * `.justignore` named it. A tombstone is the only thing the feed can say, and the files
+	 * stay: this store has no path for them any more. By the rows' own names up the parent
+	 * chain, so one never materialized is caught too.
 	 */
 	const retire = (): boolean => {
 		let any = false

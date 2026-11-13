@@ -152,7 +152,8 @@ export async function createNativeStorage(options: NativeStorageOptions): Promis
 	if (savedState) await rm(statePath, { force: true })
 	const mainStore = fsStore(mainRoot, {
 		mounts: [PRIVATE],
-		mintVersion: versions(replica)
+		mintVersion: versions(replica),
+		warn: (message) => console.warn(`volume: ${message}`)
 	})
 	let sync: SyncVolume | undefined
 	let abortRemote: (() => void) | undefined
