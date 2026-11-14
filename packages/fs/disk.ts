@@ -15,7 +15,7 @@
  *   back as the pass's last act (`relock`).
  */
 
-import { type BigIntStats, constants, watch as watchPath } from 'node:fs'
+import { type BigIntStats, constants, lstatSync, watch as watchPath } from 'node:fs'
 import {
 	chmod,
 	lstat as lstatOf,
@@ -32,7 +32,7 @@ import {
 	symlink,
 	writeFile
 } from 'node:fs/promises'
-import { dirname, join, resolve, sep } from 'node:path'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import type { NodeId } from './store'
 
 const NUL = String.fromCharCode(0)
@@ -564,7 +564,22 @@ export function fsDisk(rootPath: string): Disk {
 			try {
 				// `persistent: false`, so a CLI that never closes the store still exits; events
 				// keep arriving while the process has other work.
-				const held = watchPath(rootPath, { recursive: true, persistent: false }, (_type, name) => {
+				// On Linux, Node reports an event about a directory itself as `<dir>/<its own
+				// name>` and lstats that path with nothing to catch a failure. Under a directory
+				// with no search bit that is EACCES, thrown where no caller can reach it — so
+				// have Node pass over a name of that shape it would fail to look at.
+				const ignore = (name: string): boolean => {
+					const full = join(rootPath, name)
+					if (basename(full) !== basename(dirname(full))) return false
+					try {
+						lstatSync(full, { throwIfNoEntry: false })
+						return false
+					} catch {
+						return true
+					}
+				}
+				const options = { recursive: true, persistent: false, ignore }
+				const held = watchPath(rootPath, options, (_type, name) => {
 					if (name === null) {
 						onLost()
 						return
